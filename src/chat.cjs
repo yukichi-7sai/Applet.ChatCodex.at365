@@ -2,6 +2,8 @@
 const { randomUUID, createHash } = require('node:crypto');
 const { CodexProcess } = require('./codex-process.cjs');
 const { modes, validMode, threadDefaults, turnPolicy } = require('./approval-modes.cjs');
+const { normalizeSettings, startupOptions, threadConfig } = require('./chat-settings.cjs');
+const { format, wireView } = require('./diagnostics.cjs');
 const busy = new Set(['connecting', 'running', 'awaitingInput', 'stopping']);
 const textLimit = 32768;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -19,7 +21,7 @@ function modelsFrom(data) {
 }
 
 class Chat {
-  constructor({ clientFactory = () => new CodexProcess(), storage, getHostInfo, changed = () => {}, failed = () => {} } = {}) {
+  constructor({ clientFactory = () => new CodexProcess(), storage, getHostInfo, changed = () => {}, failed = () => {}, settings } = {}) {
     this.clientFactory = clientFactory;
     this.storage = storage;
     this.getHostInfo = getHostInfo;
@@ -38,6 +40,8 @@ class Chat {
     this.accepted = new Map();
     this.closed = false;
     this.saving = false;
+    this.settings = normalizeSettings(settings);
+    this.diagnosticBytes = 0; this.diagnosticCount = 0;
   }
   touch() {
     if (this.closed || this.notifyTimer) return;
@@ -46,15 +50,37 @@ class Chat {
       if (!this.closed) Promise.resolve(this.changed()).catch(() => {});
     }, 60);
   }
-  entry(role, text, id = randomUUID()) {
+  entry(role, text, id = randomUUID(), metadata = {}) {
     const parts = [];
     for (let offset = 0; offset < Math.max(1, text.length); offset += 4096) {
-      const entry = { id: id + ':' + offset, messageId: id, role, text: text.slice(offset, offset + 4096), order: ++this.order, revision: ++this.revision };
+      const entry = { id: id + ':' + offset, messageId: id, role, text: text.slice(offset, offset + 4096), order: ++this.order, revision: ++this.revision, ...metadata };
       this.entries.push(entry); parts.push(entry);
     }
     this.trim();
     this.touch();
     return parts;
+  }
+  diagnostic(kind, title, value) {
+    if (this.settings.displayMode === 'normal' || (kind === 'trace' && this.settings.displayMode !== 'trace')) return;
+    if (this.diagnosticBytes > 512 * 1024 || this.diagnosticCount >= 400) {
+      if (!this.diagnosticsOmitted) {
+        this.diagnosticsOmitted = true;
+        this.entry('system', 'この会話の詳細表示が上限に達しました。新しいチャットで記録を再開できます。', randomUUID(), { kind: 'detail', title: '詳細表示を省略' });
+      }
+      return;
+    }
+    const text = format(value);
+    this.diagnosticBytes += Buffer.byteLength(text); this.diagnosticCount++;
+    this.entry('system', text, randomUUID(), { kind, title: title.slice(0, 200) });
+  }
+  setSettings(settings) {
+    const previous = this.settings.displayMode;
+    this.settings = normalizeSettings(settings);
+    if (previous === 'normal' && this.settings.displayMode !== 'normal') {
+      this.diagnostic('detail', '詳細表示の範囲', '変更後に受け取る情報を表示します。過去の通信は追加取得しません。Codex内部の最終指示やメモリ要約本文は、APIが返さない場合は表示できません。');
+      if (this.threadContext) this.diagnostic('detail', 'この会話の開始時の情報', this.threadContext);
+    }
+    this.touch();
   }
   trim() {
     let size = this.entries.reduce((sum, entry) => sum + Buffer.byteLength(entry.text), 0);
@@ -97,6 +123,9 @@ class Chat {
     const candidates = this.entries.filter(entry => reset || entry.revision > after).sort((a, b) => a.revision - b.revision);
     const result = {
       generation: this.generation, reset, state: this.state, detail: this.detail,
+      displayMode: this.settings.displayMode,
+      sendKey: this.settings.sendKey,
+      settingsPending: !!this.threadOptions && JSON.stringify(this.threadOptions) !== JSON.stringify(startupOptions(this.settings)),
       models: this.models, selection: this.selection, approvalMode: this.approvalMode, approvalModes: modes, saving: this.saving,
       requests: [...this.requests.values()].map(request => request.view),
       entries: [], after: reset ? 0 : after, more: false,
@@ -121,6 +150,7 @@ class Chat {
     const epoch = ++this.generation;
     this.connectionEpoch = epoch;
     this.entries = []; this.items = new Map(); this.requests.clear(); this.accepted.clear();
+    this.threadOptions = null; this.threadContext = null; this.diagnosticBytes = 0; this.diagnosticCount = 0; this.diagnosticsOmitted = false;
     this.threadId = null; this.threadDefaults = null; this.run = null; this.omitted = false; this.models = [];
     this.state = 'connecting'; this.detail = 'Codexに接続しています。'; this.touch();
     void this.connectAsync(epoch);
@@ -144,6 +174,11 @@ class Chat {
       this.hostInstanceId = info.instanceId;
       if (this.closed || epoch !== this.generation) return;
       client = this.clientFactory(); this.client = client;
+      client.on('wire', event => {
+        if (epoch === this.connectionEpoch && !this.closed && this.settings.displayMode === 'trace') {
+          try { this.diagnostic('trace', event.direction + ' · ' + (event.method || '応答'), wireView(event)); } catch {}
+        }
+      });
       client.on('notification', msg => {
         if (epoch === this.connectionEpoch && !this.closed) {
           try { this.notification(msg); } catch { this.disconnected('Codexの通知形式に対応していません。'); }
@@ -245,20 +280,30 @@ class Chat {
   async generate(run, text) {
     try {
       if (!this.threadId) {
-        const result = await this.client.request('thread/start', {
+        this.threadOptions = startupOptions(this.settings);
+        const developerInstructions = this.threadOptions.sendOperationInstructions
+          ? 'AppDockの操作を支援するチャットです。設定の操作には既存のAppDock MCPだけを使い、settings.jsonを直接編集しないでください。対象instanceIdは ' +
+            this.hostInstanceId + ' です。MCPの情報取得で一致を確認してから操作してください。一致する接続がなければ操作せず説明してください。設定・コマンドのスキーマと現在のrevisionを取得し、必要なdryRun、保存、結果確認を行ってください。失敗・結果不明の操作を自動再送しないでください。' : undefined;
+        const start = {
           model: run.selection.model, cwd: process.cwd(), serviceName: 'appdock_chatcodex',
-          developerInstructions: 'AppDockの操作を支援するチャットです。設定の操作には既存のAppDock MCPだけを使い、settings.jsonを直接編集しないでください。対象instanceIdは ' +
-            this.hostInstanceId + ' です。MCPの情報取得で一致を確認してから操作してください。一致する接続がなければ操作せず説明してください。設定・コマンドのスキーマと現在のrevisionを取得し、必要なdryRun、保存、結果確認を行ってください。失敗・結果不明の操作を自動再送しないでください。',
-        });
+          ...threadConfig(this.threadOptions), ...(developerInstructions ? { developerInstructions } : {}),
+        };
+        this.threadContext = { operationInstructions: developerInstructions || 'Appletの操作指示は送信していません。', memoryMode: this.threadOptions.memoryMode,
+          note: 'MEMORY_SUMMARY本文・Codex内部の指示全文は取得していません。メモリ機能の有効状態はCodex設定に従います。' };
+        this.diagnostic('detail', 'Appletが送る開始時の指示・設定', { ...this.threadContext, model: start.model, cwd: start.cwd, config: start.config });
+        const result = await this.client.request('thread/start', start);
         if (this.run !== run) return;
         if (!result?.thread?.id) throw Error('Codexの会話開始応答に対応していません。');
         this.threadDefaults = threadDefaults(result);
+        this.threadContext.instructionSources = Array.isArray(result.instructionSources) ? result.instructionSources : [];
+        this.diagnostic('detail', 'Codexが返した開始時の情報', { instructionSources: this.threadContext.instructionSources, ...this.threadDefaults });
         this.threadId = result.thread.id;
       }
       if (run.canceled) { this.finish('interrupted'); return; }
       const params = { threadId: this.threadId, input: [{ type: 'text', text }], model: run.selection.model,
         ...turnPolicy(run.approvalMode, this.threadDefaults) };
       if (run.selection.effort) params.effort = run.selection.effort;
+      this.diagnostic('detail', '今回の送信設定', { model: params.model, effort: params.effort || '指定なし', approvalMode: run.approvalMode, ...turnPolicy(run.approvalMode, this.threadDefaults) });
       const result = await this.client.request('turn/start', params);
       if (this.run !== run) return;
       if (!result?.turn?.id) throw Error('Codexの送信応答に対応していません。');
@@ -269,7 +314,7 @@ class Chat {
       if (error.code !== undefined || error.message?.startsWith('Codexの承認設定')) {
         this.finish('failed');
         this.detail = error.message?.startsWith('Codexの承認設定') ? error.message
-          : 'Codexが送信を受け付けませんでした。承認モードとCodex側の制限を確認してください。自動再送していません。';
+          : 'Codexが送信を受け付けませんでした。承認モード・開始時の設定とCodex側の制限を確認してください。自動再送していません。';
         this.touch();
       } else this.disconnected('Codexへの送信結果を確認できません。操作済みの可能性があるため、自動再送していません。');
     }
@@ -284,6 +329,9 @@ class Chat {
     if (!this.run) return;
     const eventTurnId = p.turnId || p.turn?.id;
     if (eventTurnId && this.run.turnId && eventTurnId !== this.run.turnId) return;
+    if (['item/started', 'item/completed'].includes(method) && p.item && !['agentMessage', 'reasoning', 'userMessage'].includes(p.item.type))
+      this.diagnostic('detail', (method === 'item/started' ? '開始' : '完了') + ' · ' + p.item.type, p.item);
+    if (method === 'error') this.diagnostic('detail', 'Codexのエラー', p.error || p);
     if (method === 'turn/started') {
       if (p.turn?.id) this.run.turnId = p.turn.id;
       if (this.run.canceled) this.interrupt(this.run);
@@ -342,6 +390,7 @@ class Chat {
     this.assertGeneration(generation);
     if (this.state !== 'idle' || this.saving) throw Error('待機中に新しいチャットを開始してください。');
     this.generation++; this.entries = []; this.items = new Map(); this.accepted.clear(); this.requests.clear();
+    this.threadOptions = null; this.threadContext = null; this.diagnosticBytes = 0; this.diagnosticCount = 0; this.diagnosticsOmitted = false;
     this.threadId = null; this.threadDefaults = null; this.detail = ''; this.omitted = false; this.touch();
     return { accepted: true };
   }
@@ -360,6 +409,7 @@ class Chat {
       this.client.unsupported(msg.id); return;
     }
     const id = randomUUID();
+    this.diagnostic('detail', 'Codexからの確認要求 · ' + msg.method, p);
     let view, cancel, accept;
     if (['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(msg.method)) {
       const available = Array.isArray(p.availableDecisions) ? p.availableDecisions : ['accept', 'decline', 'cancel'];
@@ -455,6 +505,7 @@ class Chat {
     try { answer = JSON.parse(response); } catch { throw Error('回答の形式が不正です。'); }
     if (!object(answer)) throw Error('回答の形式が不正です。');
     const result = answer.decision === 'cancel' && request.view.kind === 'questions' ? request.cancel : request.accept(answer);
+    this.diagnostic('detail', '確認への回答', { kind: request.view.kind, response: result });
     this.client.respond(request.wireId, result);
     this.requests.delete(id);
     this.state = this.requests.size ? 'awaitingInput' : 'running'; this.touch();

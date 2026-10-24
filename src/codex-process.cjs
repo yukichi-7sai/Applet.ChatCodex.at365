@@ -55,6 +55,7 @@ class CodexProcess extends EventEmitter {
     this.cwd = cwd;
     this.requestTimeout = requestTimeout;
     this.pending = new Map();
+    this.incoming = new Map();
     this.sequence = 0;
     this.closed = false;
     this.intentional = false;
@@ -96,6 +97,12 @@ class CodexProcess extends EventEmitter {
       let msg;
       try { msg = JSON.parse(line); } catch { return this.fail('Codexの応答形式が不正です。'); }
       if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return this.fail('Codexの応答形式が不正です。');
+      if (typeof msg.method === 'string' && msg.id !== undefined) {
+        if (this.incoming.size >= 32) return this.fail('Codexからの確認要求が多すぎます。');
+        this.incoming.set(msg.id, msg.method);
+      }
+      if (msg.method === 'serverRequest/resolved') this.incoming.delete(msg.params?.requestId);
+      this.emit('wire', { direction: '受信', method: msg.method || this.pending.get(msg.id)?.method, message: msg });
       if (typeof msg.method === 'string') this.emit(msg.id === undefined ? 'notification' : 'request', msg);
       else if (msg.id !== undefined) {
         const pending = this.pending.get(msg.id);
@@ -110,11 +117,12 @@ class CodexProcess extends EventEmitter {
       }
     }
   }
-  send(message) {
+  send(message, method = message.method) {
     if (this.closed || !this.child?.stdin.writable) throw Error('Codexに接続されていません。');
     const line = JSON.stringify(message) + '\n';
     if (Buffer.byteLength(line) > 1024 * 1024) throw Error('Codexへの要求が大きすぎます。');
     this.child.stdin.write(line);
+    this.emit('wire', { direction: '送信', method, message });
   }
   request(method, params, timeout = this.requestTimeout) {
     if (this.pending.size >= 32) return Promise.reject(Error('Codexへの要求が混み合っています。'));
@@ -132,8 +140,8 @@ class CodexProcess extends EventEmitter {
       }
     });
   }
-  respond(id, result) { this.send({ id, result }); }
-  unsupported(id) { this.send({ id, error: { code: -32601, message: 'This client does not support this request.' } }); }
+  respond(id, result) { this.send({ id, result }, this.incoming.get(id)); this.incoming.delete(id); }
+  unsupported(id) { this.send({ id, error: { code: -32601, message: 'This client does not support this request.' } }, this.incoming.get(id)); this.incoming.delete(id); }
   fail(message, kill = true) {
     if (this.closed) return;
     this.closed = true;

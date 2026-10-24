@@ -193,3 +193,47 @@ test('実stdio: 入力項目なしのMCP確認は画面へ待機し、明示的�
     assert.deepEqual(replies.at(-1), { action: decision, content: decision === 'accept' ? {} : null });
   }
 });
+
+test('開始指示とメモリ注入は会話単位で指定し、変更は次の新しいチャットへ反映', async t => {
+  const c = context({ settings: { displayMode: 'detail', sendOperationInstructions: false, memoryMode: 'exclude' } });
+  t.after(() => c.chat.close()); await ready(c);
+  const starts = [], request = c.chat.client.request.bind(c.chat.client);
+  c.chat.client.request = (method, params, ...rest) => { if (method === 'thread/start') starts.push(structuredClone(params)); return request(method, params, ...rest); };
+  c.chat.send(c.chat.generation, 'without', '指示なしの確認'); await until(() => c.chat.state === 'idle');
+  assert.equal(starts[0].developerInstructions, undefined);
+  assert.deepEqual(starts[0].config, { 'memories.use_memories': false });
+  c.chat.setSettings({ displayMode: 'trace', sendOperationInstructions: true, memoryMode: 'include' });
+  assert.equal(c.chat.read(c.chat.generation, 0).settingsPending, true);
+  c.chat.send(c.chat.generation, 'same', '同じ会話'); await until(() => c.chat.state === 'idle');
+  assert.equal(starts.length, 1);
+  c.chat.newChat(c.chat.generation);
+  c.chat.send(c.chat.generation, 'with', '新しい会話'); await until(() => c.chat.state === 'idle');
+  assert.match(starts[1].developerInstructions, /fixture-host/);
+  assert.deepEqual(starts[1].config, { 'memories.use_memories': true });
+  assert.equal(c.chat.read(c.chat.generation, 0).settingsPending, false);
+});
+
+test('通常は診断を記録せず、表示切替で開始時の自前情報を確認できる', async t => {
+  const c = context(); t.after(() => c.chat.close()); await ready(c);
+  c.chat.send(c.chat.generation, 'normal', '通常'); await until(() => c.chat.state === 'idle');
+  assert.equal(c.chat.entries.some(entry => entry.kind), false);
+  c.chat.setSettings({ displayMode: 'detail' });
+  assert.ok(c.chat.entries.some(entry => entry.title === 'この会話の開始時の情報' && entry.text.includes('settings.json')));
+  assert.equal(c.chat.entries.some(entry => entry.kind === 'trace'), false);
+  c.chat.send(c.chat.generation, 'detail', 'MCP確認'); await until(() => c.chat.state === 'awaitingInput');
+  assert.ok(c.chat.entries.some(entry => entry.title?.startsWith('Codexからの確認要求')));
+  c.chat.respond(c.chat.generation, [...c.chat.requests.keys()][0], '{"decision":"accept"}');
+  await until(() => c.chat.state === 'idle');
+  assert.ok(c.chat.entries.some(entry => entry.title === '確認への回答'));
+});
+
+test('通信ログは認証応答を隠し、量を制限して会話を継続できる', async t => {
+  const c = context({ settings: { displayMode: 'trace' } }); t.after(() => c.chat.close()); await ready(c);
+  assert.ok(c.chat.entries.some(entry => entry.kind === 'trace' && entry.title.includes('initialize')));
+  assert.ok(c.chat.entries.some(entry => entry.text.includes('認証・設定に関する通信本文')));
+  for (let n = 0; n < 500; n++) c.chat.diagnostic('trace', 'large', { text: 'x'.repeat(16000) });
+  assert.equal(c.chat.entries.filter(entry => entry.title === '詳細表示を省略').length, 1);
+  c.chat.send(c.chat.generation, 'after-limit', '上限後'); await until(() => c.chat.state === 'idle');
+  assert.ok(c.chat.entries.some(entry => entry.role === 'assistant' && entry.text.includes('上限後')));
+  assert.ok(Buffer.byteLength(JSON.stringify(c.chat.read(0, 0))) < 256 * 1024);
+});

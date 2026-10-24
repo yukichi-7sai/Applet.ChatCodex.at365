@@ -29,12 +29,12 @@ fs.writeFileSync(path.join(folder, 'diagnostic-entry.cjs'),
   'const request=c.request.bind(c);let checked=false;c.request=async(method,params,...rest)=>{' +
   "if(method==='turn/start'&&!checked){checked=true;const answer=await request('mcpServer/tool/call',{threadId:params.threadId,server:'chatcodex_approval_fixture',tool:'ask_consent',arguments:{}},60000);record({method:'diagnosticMcp',accepted:JSON.stringify(answer).includes('CONSENT_ACCEPTED')});}" +
   'const result=await request(method,params,...rest);if(method===\'thread/start\'||method===\'turn/start\')fs.appendFileSync(' + JSON.stringify(policiesFile) +
-  ",JSON.stringify(method==='thread/start'?{method,approvalPolicy:result.approvalPolicy,approvalsReviewer:result.approvalsReviewer,sandboxPolicy:result.sandbox}:{method,approvalPolicy:params.approvalPolicy,approvalsReviewer:params.approvalsReviewer,sandboxPolicy:params.sandboxPolicy})+'\\n');return result;};return c;}});");
+  ",JSON.stringify(method==='thread/start'?{method,approvalPolicy:result.approvalPolicy,approvalsReviewer:result.approvalsReviewer,sandboxPolicy:result.sandbox,operationInstructionsSent:!!params.developerInstructions,memoryUse:params.config?.['memories.use_memories']??'inherit'}:{method,approvalPolicy:params.approvalPolicy,approvalsReviewer:params.approvalsReviewer,sandboxPolicy:params.sandboxPolicy})+'\\n');return result;};return c;}});");
 const settings = require(path.join(host, 'out/main/shared/settings-schema')).createDefaultSettings();
 settings.host.hardwareAcceleration = false; settings.host.closeToTray = false; settings.host.soundEnabled = false;
 settings.globalShortcutCommands = []; settings.gestures.enabled = false;
 settings.updates.checkHostOnStartup = false; settings.updates.checkAppletsOnStartup = false;
-settings.extensions = { 'at365.chatcodex': { enabled: true, settings: {} } };
+settings.extensions = { 'at365.chatcodex': { enabled: true, settings: { displayMode: 'trace', sendOperationInstructions: false, memoryMode: 'exclude' } } };
 fs.writeFileSync(path.join(profile, 'settings.json'), JSON.stringify(settings));
 let instance, page;
 (async () => {
@@ -51,7 +51,7 @@ let instance, page;
       await page.getByTestId('approval').click(); await page.locator('[data-mode="' + mode + '"]').click();
       await until(() => page.getByTestId('approval').isEnabled(), 'mode saved');
       const text = '疎通確認です。MCP・ファイル・コマンド・音声を使わず、「MODE_' + mode + '_OK」とだけ返してください。';
-      await page.getByTestId('input').fill(text); await page.getByTestId('input').press('Enter');
+      await page.getByTestId('input').fill(text); await page.getByTestId('input').press('Control+Enter');
       if (mode === 'ask') {
         await until(async () => (await page.getByTestId('requests').textContent()).includes('疎通確認用のMCP承認'), 'real MCP approval card', 90000);
         await page.screenshot({ path: path.join(profile, 'real-mcp-approval.png') });
@@ -72,9 +72,20 @@ let instance, page;
     assert.deepEqual(turns.map(p => [p.approvalPolicy, p.approvalsReviewer, p.sandboxPolicy.type]), [
       ['on-request', 'user', 'workspaceWrite'], ['on-request', 'auto_review', 'workspaceWrite'], ['never', 'user', 'dangerFullAccess'], ['on-request', 'user', 'readOnly'],
     ]);
+    assert.equal(baseline.operationInstructionsSent, false); assert.equal(baseline.memoryUse, false);
+    await instance.save({ extensionId: 'at365.chatcodex', settings: { displayMode: 'detail', sendOperationInstructions: true, memoryMode: 'include' } });
+    await until(() => page.getByTestId('settings-note').isVisible(), 'startup options pending');
+    await page.getByTestId('new-chat').click();
+    await until(async () => await page.getByTestId('settings-note').isHidden() && await page.getByTestId('new-chat').isEnabled(), 'new startup options ready');
+    await page.getByTestId('input').fill('疎通確認です。MCP・ファイル・コマンド・音声を使わず、「STARTUP_OK」とだけ返してください。');
+    await page.getByTestId('input').press('Control+Enter');
+    await until(async () => (await page.locator('.message[data-role="assistant"] .message-text').allTextContents()).join('').includes('STARTUP_OK') && (await page.getByTestId('status').textContent()).startsWith('接続済み'), 'changed startup options completed', 90000);
+    const latest = fs.readFileSync(policiesFile, 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(p => p.method === 'thread/start').at(-1);
+    assert.equal(latest.operationInstructionsSent, true); assert.equal(latest.memoryUse, true);
+    assert.ok((await page.getByTestId('conversation').textContent()).includes('settings.json'));
     const result = { ok: true, fixture: 'diagnostic MCP server called via native mcpServer/tool/call; real Codex and Applet UI', appletVersion: manifest.version,
       codexVersion: execFileSync(native, ['--version'], { encoding: 'utf8', windowsHide: true }).trim(),
-      hostSha256: instance.hash, codexSha256: hash(native), strictConfigOverrides: true, realMcpApprovalAnswered: true, fourModesAccepted: true, inheritedReadOnlyRestored: true, policies };
+      hostSha256: instance.hash, codexSha256: hash(native), strictConfigOverrides: true, realMcpApprovalAnswered: true, fourModesAccepted: true, inheritedReadOnlyRestored: true, startupSettingsVerified: true, policies };
     await instance.close(); instance = null;
     fs.writeFileSync(path.join(profile, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify({ ...result, profile }));
   } catch (error) {

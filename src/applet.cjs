@@ -1,17 +1,21 @@
 'use strict';
 const { Chat } = require('./chat.cjs');
+const { defaults } = require('./chat-settings.cjs');
 
 function createApplet(options = {}) {
-  let chat;
+  let chat, disposeSettings;
   return {
     async activate(context) {
+      const readSettings = () => Object.fromEntries(Object.entries(defaults).map(([key, value]) => [key, context.settings?.get(key, value) ?? value]));
       chat = new Chat({
         storage: context.storage,
         getHostInfo: () => context.appdock.call('system.getInfo'),
         changed: () => context.pages.notifyChanged('main'),
         failed: message => context.log.error(message),
+        settings: readSettings(),
         ...options,
       });
+      disposeSettings = context.settings?.onChanged(() => chat?.setSettings(readSettings()));
       context.commands.register('at365.chatcodex.open', 'Codexチャットを開く', () => context.pages.open('main'));
     },
     async onPageAction(id, input, pageId) {
@@ -28,7 +32,7 @@ function createApplet(options = {}) {
         default: throw Error('未対応のページ操作です。');
       }
     },
-    async deactivate() { await chat?.close(); chat = undefined; },
+    async deactivate() { disposeSettings?.(); disposeSettings = undefined; await chat?.close(); chat = undefined; },
   };
 }
 Object.assign(exports, createApplet());

@@ -34,7 +34,7 @@ let instance;
     const effort = await page.getByTestId('effort').locator('option[value="low"]').count();
     if (effort) { await page.getByTestId('effort').selectOption('low'); await until(() => page.getByTestId('effort').isEnabled(), 'effort saved'); }
     await page.getByTestId('input').fill('接続確認です。MCP、ファイル、コマンド、音声は使わず、「接続確認完了」とだけ返してください。');
-    await page.getByTestId('input').press('Enter');
+    await page.getByTestId('input').press('Control+Enter');
     await until(async () => {
       const text = await page.locator('.message[data-role="assistant"] .message-text').allTextContents();
       return text.join('').includes('接続確認完了') && (await page.getByTestId('status').textContent()).startsWith('接続済み');

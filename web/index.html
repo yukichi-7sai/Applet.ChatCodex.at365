@@ -18,6 +18,7 @@
       <button id="new-chat" data-testid="new-chat" type="button">新しいチャット</button>
     </header>
     <div id="notice" data-testid="notice" role="alert" hidden></div>
+    <p id="settings-note" data-testid="settings-note" role="status" hidden>開始時の設定が変更されています。新しいチャットから適用します。</p>
     <section id="conversation" data-testid="conversation" aria-label="会話" tabindex="0">
       <p id="empty">Codexに相談する内容を入力してください。</p>
       <p id="omitted" hidden>古いメッセージの表示を省略しています。</p>
@@ -40,7 +41,7 @@
           <button id="send" data-testid="send" class="send-button" type="submit" aria-label="送信" title="送信"><span id="send-label" class="sr-only">送信</span><svg viewBox="0 0 24 24" aria-hidden="true"><path id="send-icon" d="M12 19V5m-6 6 6-6 6 6"></path></svg></button>
         </div>
       </div>
-      <span id="input-hint">Enterで送信・Shift+Enterで改行</span>
+      <span id="input-hint">Ctrl+Enterで送信・Enterで改行</span>
     </form>
     <div id="approval-menu" data-testid="approval-menu" popover="auto" role="menu" aria-label="Codexのアクションの承認方法">
       <p class="menu-heading">Codexのアクションの承認方法</p>

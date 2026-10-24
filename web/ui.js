@@ -80,12 +80,17 @@ function renderControls() {
   $('connect').hidden = !['error', 'disconnected'].includes(state.state);
   $('connect').disabled = performing;
   $('status').textContent = (labels[state.state] || state.state) + (state.detail ? ' — ' + state.detail : '');
+  $('settings-note').hidden = !state.settingsPending;
+  const shortcut = state.sendKey === 'enter' ? 'Enter' : 'Ctrl+Enter';
+  $('input-hint').textContent = shortcut + 'で送信・' + (state.sendKey === 'enter' ? 'Shift+Enter' : 'Enter') + 'で改行';
+  if (!active) $('send').title = '送信（' + shortcut + '）';
 }
 function renderEntries(records) {
   for (const entry of records) entries.set(entry.id, entry);
   for (const [id, entry] of entries) if (entry.order < state.minOrder) entries.delete(id);
   const groups = new Map();
   for (const entry of [...entries.values()].sort((a, b) => a.order - b.order)) {
+    if (entry.kind && (state.displayMode === 'normal' || (entry.kind === 'trace' && state.displayMode !== 'trace'))) continue;
     if (!groups.has(entry.messageId)) groups.set(entry.messageId, []);
     groups.get(entry.messageId).push(entry);
   }
@@ -93,16 +98,18 @@ function renderEntries(records) {
   for (const [id, parts] of groups) {
     let node = bubbles.get(id);
     if (!node) {
-      node = document.createElement('article'); node.className = 'message'; node.dataset.role = parts[0].role;
-      const title = document.createElement('div'); title.className = 'message-title'; title.textContent = parts[0].role === 'user' ? 'あなた' : 'Codex';
-      const text = document.createElement('div'); text.className = 'message-text';
+      node = document.createElement(parts[0].kind ? 'details' : 'article'); node.className = 'message'; node.dataset.role = parts[0].role;
+      if (parts[0].kind) node.dataset.kind = parts[0].kind;
+      const title = document.createElement(parts[0].kind ? 'summary' : 'div'); title.className = 'message-title';
+      title.textContent = parts[0].kind ? parts[0].title : parts[0].role === 'user' ? 'あなた' : 'Codex';
+      const text = document.createElement(parts[0].kind ? 'pre' : 'div'); text.className = 'message-text';
       node.append(title, text); bubbles.set(id, node);
     }
     const text = parts.map(part => part.text).join('');
     if (node.lastChild.textContent !== text) node.lastChild.textContent = text;
     $('messages').append(node);
   }
-  $('empty').hidden = entries.size > 0;
+  $('empty').hidden = groups.size > 0;
   $('omitted').hidden = !state.omitted;
 }
 async function perform(action) {
@@ -197,7 +204,8 @@ $('input').addEventListener('input', renderControls);
 $('input').addEventListener('compositionstart', () => { composing = true; });
 $('input').addEventListener('compositionend', () => { composing = false; });
 $('input').addEventListener('keydown', event => {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !composing) {
+  const sendOnControl = state?.sendKey !== 'enter';
+  if (event.key === 'Enter' && event.ctrlKey === sendOnControl && !event.shiftKey && !event.altKey && !event.metaKey && !event.isComposing && !composing && event.keyCode !== 229) {
     event.preventDefault();
     if (!['running', 'awaitingInput', 'stopping'].includes(state?.state) && !$('send').disabled) $('composer').requestSubmit();
   }

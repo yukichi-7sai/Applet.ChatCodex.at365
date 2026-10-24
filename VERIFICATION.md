@@ -184,3 +184,53 @@ GUI試験の初回は、試験設定へshortcutsの誤った配列値を追加�
 - 発行済み0.2.0のZIPとfeed、9ファイルのhashを再照合し、manifest／実行コード8ファイルがソースと一致した。今回追加した内容はこの検証記録だけで、製品修正・版更新・再発行は行っていない。
 - 再利用の照合結果は `.artifacts/commit-validation-020-20261025/reuse.json`。最終文書・リンク・差分検査を行い、stageと作業ファイルの一致、最終stage tree、コミット後SHA/treeは同ディレクトリのstage.jsonとcommit.jsonへ記録する。
 - 実効author/committerは `yukichi-7sai <yukichi@at365.jp>`。本体変更、実利用先へのdeploy、リモート作成、push、Releaseは行わない。
+
+## 2026-10-25 0.3.0 表示・開始時設定・送信キー
+
+### 範囲と発行前レビュー
+
+- 0.2.0から設定4項目を追加するため、共通の版更新規則に従い0.3.0とした。通常／詳細／通信ログ、AppDock操作指示の送信、既存メモリの自動注入指定、Enter／Ctrl+Enter送信をAppletだけへ追加する。本体ソース・既存のユーザー設定・Codex設定ファイルは変更しない。
+- 開始前はmainの01235be、clean、remote／upstreamなしを確認して着手した。継続作業中の再確認ではorigin/mainとGitHub／AQUAのremoteが存在したが、自分の変更を保持し、pull・統合・remote操作を行っていない。
+- 発行前に差分と影響先をレビューした。共通Settingsによる保存・通知、PC専用preferencesとの分離、既定値、開始時設定の固定と次会話への反映、RPC要求IDの対応付け、秘密値・認証本文・思考本文の除外、表示量の上限、HTML非実行、既存の承認・モデル選択・停止・寿命を確認した。
+- レビューで、詳細カードを通常表示へ隠した際の空画面案内を可視カード数に合わせて修正した。送信キーはCtrl+Enterを新しい既定値とし、Enter／Shift+Enterの改行、IMEのisComposing・compositionイベント・keyCode 229を考慮した。必要な単体再試験とビルドを行い、発行物のGUIを再確認する。発行を妨げる未解決の指摘はない。
+- APIの範囲は公式App Server／Memories／設定参照とCodex 0.161.0生成schemaで照合した。メモリはthread/startのconfig内の `memories.use_memories` だけを指定する。features.memoriesやメモリ生成を強制変更せず、内部の最終指示・MEMORY_SUMMARY全文を取得できるとは説明しない。
+
+### 検証結果
+
+- 最終単体29/29、fail／skip 0、ビルド成功。証跡 `.artifacts/details-030/test-1792871858484/`。before／afterの入力hash一致。
+- 発行前GUI8群成功。Ctrl+Enter既定・改行・Enterへの即時切替・IME合成イベント抑止・再起動後の設定保持、詳細／通信の切替と折りたたみ、ツール結果の秘密値伏せ字とscript文字列の非実行、開始時設定変更の案内、既存質問／承認／停止／表示先変更／360 CSS pxを確認。証跡 `.artifacts/details-030/ui-1792871815143/`、画面と結果 `.artifacts/ui-1792871816026/`。これは最後の空画面案内修正前の結果で、最終発行物でも同じGUIを確認する。
+- 実Codex GUI成功。子プロセス限定のon-request／user／read-only設定、診断用MCPからの実承認要求への回答、4モードの送受信、継承read-only復元を確認。操作指示オフ・メモリfalseから、設定を変えて新しい会話を開始した際の操作指示オン・メモリtrueも確認。証跡 `.artifacts/details-030/approval-1792871870153/`、詳細 `.artifacts/approval-ui-1792871871001/`。before／after入力hash一致。
+- 実App Serverの開始時プローブは継承／true／falseを受理し、不正な文字列を拒否した。Codex設定ファイルの前後hash一致。証跡 `.artifacts/details-030/startup-1792871403975/`、結果 `.artifacts/startup-probe-1792871404399/result.json`。このプローブ対象の通信コードは最終ソースと同一で、モデルへの送信やメモリ本文の収集は行っていない。
+- 固定ホストAppDock 0.87.2、EXE SHA256 `aacda9fbd0086fd0ff7b47303b9c1e7a91b80dde68064d88659ccf5ccc384d4b`。実Codex CLI 0.161.0、EXE SHA256 `a0f89acca07a511734cac7fddee26b2106fab68918717bc90df16104a0760a30`。LUNAの隔離GUIであり、KAGUYA実機や実AppDockテーマ変更の再試験とは区別する。
+
+### 最終発行物の確認
+
+- 発行先 `A:/40.ARTIFACT/Applet.ChatCodex.at365`。`publish.bat` 終了コード0、証跡 `.artifacts/details-030/publish-1792871934009/`、入力hash一致。
+- update.zipは30,441 bytes、SHA256 `2cc25cb48af6f2cd33c1b4f5f58feeb61bb472e5b4ab9d154f299b6226198e49`。feedの版0.3.0・サイズ・hashと一致。ZIP内11ファイルは発行フォルダーと一致し、実行コード／manifestの10ファイルはソースとも一致した。USAGE.mdも利用仕様からの生成結果と一致。詳細 `.artifacts/details-030/publish-verification.json`。
+- `CHATCODEX_TEST_PACKAGE` に発行済みフォルダーを指定し、隔離コピーで最終GUI8群と実Codex GUIを再実行して成功。証跡 `.artifacts/details-030/ui-1792871942249/`、`.artifacts/details-030/approval-1792871959870/`。両方とも終了コード0・入力hash一致。画面／結果は `.artifacts/ui-1792871943124/`、`.artifacts/approval-ui-1792871960681/`。
+- 最終文書・文字コード・構文・ローカルリンクの検査は37ファイル、JS/CJS構文19件、参照39件で成功。PowerShellのUTF-8 BOM／CRLF、BATのASCII／CRLF、manifestと設定既定値の一致、Git差分の空白検査も成功。詳細 `.artifacts/details-030/document-check.json`。
+- 今回の0.3.0のGUI／実承認profileは各3回、開始時プローブは2回で、直近3回の保持範囲内。旧版の再利用証跡は保護し、削除対象はなかった。終了状態と保護対象の確認は `.artifacts/details-030/cleanup.json`。
+
+### 制約と未実施
+
+- IME確認はブラウザーの合成イベントと実際のEnter／Ctrl+Enter入力。物理キーボードでの日本語変換操作は未確認。360 CSS pxはPlaywrightのviewport指定であり、物理ディスプレイ幅の変更ではない。
+- メモリ指定がAPIで受理・反映されることを確認した。Codex側でメモリ機能が無効な場合の自動注入や、内部MEMORY_SUMMARY本文そのものの取得・表示は保証しない。自動注入の指定は、モデルによる任意のファイル読取りを禁止する設定ではない。
+- 認証本文を除外し、既知の秘密値形式を伏せるが、任意のツール出力のすべての機微情報を判定する機能ではない。詳細／通信の保持は現在の実行中の会話だけで、Codex自身の履歴保存設定は変更しない。
+- 本体変更、実利用先へのdeploy、commit・push・Releaseは行っていない。Appletの設定は既存の共通Settingsを利用するため、本体との通信APIの追加も不要だった。
+
+## 2026-10-25 将来のApplet開発・作業再開の文書化
+
+- [設計書の第13節](docs/design.md#future-applet-development)へ、開発セットのClone、開発用チャット、実装・試験・ビルド・インストール、AppDock再起動後の利用と作業再開を未実装の構想として記録した。現在の0.3.0の仕様とは分け、DEVELOPMENTから参照を追加した。
+- 原因別の中断・続行、会話IDと作業場所のPC専用保存、完了済み／結果不明の確認、段階的な実装案、未決事項と将来の受け入れ条件を整理した。
+- 既存の未コミット実装を保持し、pull・統合は行っていない。今回は文書だけを変更し、ローカルリンク・明示アンカー・Markdown構造・差分の空白を確認した。製品コード・設定・版・発行物は変更せず、ビルド・実機試験・再発行・commit・pushは行っていない。
+
+## 2026-10-25 0.3.0のコミット・プッシュ照合
+
+- 01235be以降の0.3.0実装、送信キー・表示・開始時設定、試験と関連文書、未実装の将来構想を対象とする。通信ログの開発者設定への分離・上限回収と、Applet開発・会話再開の追加実装は含まない。既存の未コミット変更を保持し、pull・統合・本体変更は行っていない。
+- 必要な回帰は単体29件、ビルド・梱包、発行物GUI8群、実App ServerのMCP承認と4モード・継承復元・開始時設定切替、メモリ指定の開始時プローブ。実装時の完全なログ・終了コード・入力hashと現状を照合した。
+- 単体とビルド・発行は、関係するソース・試験・固定ツール・packer入力が一致するため成功結果を再利用した。収集対象に含まれていた本体EXEだけが変わっていたが、この2工程では読み込まない。判定と照合差分は `.artifacts/commit-validation-030-20261025/reuse.json`、phase-comparison.jsonに記録した。
+- 固定AppDock EXEが0.87.3へ更新されていたため、発行済み0.3.0を隔離コピーしたGUI8群と実Codex GUIを再実行し、成功した。新しい証跡は同ディレクトリの `ui-1792873738251/`、`approval-1792873756469/`。ともに終了コード0・前後入力hash・ログhash一致。配置コピーの実行コード／Web資産9ファイルも発行物と一致した。
+- 開始時プローブも通常ユーザー環境で再実行し、継承／true／false受理、不正値拒否、Codex設定ファイルの前後hash一致を確認した。証跡は `startup-1792873770631/`。今回採用したCLIは0.161.0、SHA256 `a0f89acca07a511734cac7fddee26b2106fab68918717bc90df16104a0760a30`。本体0.87.3のEXE SHA256は `be891a3312e86830f66598288dc585704b1e71eace8a2e4793b72d4651bc4cf5`。
+- feed／ZIP／全11ファイルと、ソースの実行コード・manifest 10ファイル、生成USAGEを再照合して一致した。0.3.0のサイズ・hashは発行時から変わっていない。後続変更は設計・開発・検証の文書だけなので、版更新・再発行はしていない。今回の梱包照合と最終文書・構文・リンク検査は同ディレクトリのpublish-verification.jsonとdocument-check.jsonに記録する。
+- 試験プロセスの終了を確認し、古い成功profile `ui-1792871343647` と `approval-ui-1792871408333` の結果メタデータを退避して整理した。GUI・実承認・開始時プローブは各直近3回と、旧版・再利用証跡を保持した。詳細は同ディレクトリのcleanup.json。
+- 実効author／committerは `yukichi-7sai <yukichi@at365.jp>`。プッシュ前のGitHub mainは01235be、AQUAはブランチ未作成だった。設定済みoriginの2つのpush URLを使用する。stageと作業ファイルの一致・対象tree・commit後SHA・両リモートmainの照合は、同ディレクトリのstage.json、commit.json、push.jsonへ記録する。Release・実利用先へのdeployは対象外とする。

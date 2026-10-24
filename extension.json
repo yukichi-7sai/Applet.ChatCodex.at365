@@ -3,12 +3,33 @@
   "id": "at365.chatcodex",
   "name": "Applet.ChatCodex.at365",
   "displayName": "ChatCodex",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minimumHostVersion": "0.86.13",
   "runtime": "node",
   "entry": "src/applet.cjs",
   "description": "Codexとチャットし、既存のMCP接続でAppDockを操作します。",
-  "capabilities": ["pages", "storage", "appdock-api"],
+  "capabilities": ["pages", "storage", "appdock-api", "settings"],
+  "settings": [
+    {
+      "key": "sendKey", "title": "メッセージの送信キー", "type": "select", "default": "ctrl-enter",
+      "description": "すぐに切り替わります。Ctrl+Enterの場合はEnterで改行します。どちらもShift+Enterで改行でき、日本語の変換確定中は送信しません。",
+      "options": [{"value":"ctrl-enter","label":"Ctrl+Enter（既定）"},{"value":"enter","label":"Enter"}]
+    },
+    {
+      "key": "displayMode", "title": "チャットの表示内容", "type": "select", "default": "normal",
+      "description": "表示をすぐに切り替えます。詳細は初期指示・ツール・確認、通信ログは送受信JSONも表示します。記録は実行中の会話内だけで、過去の通信は追加取得しません。",
+      "options": [{"value":"normal","label":"通常"},{"value":"detail","label":"詳細"},{"value":"trace","label":"通信ログ"}]
+    },
+    {
+      "key": "sendOperationInstructions", "title": "AppDockの操作指示を送る", "type": "boolean", "default": true,
+      "description": "次の新しいチャットから適用します。既存MCPの使用、接続先・revisionの確認、設定JSONの直接編集禁止などの指示を送ります。オフでもCodex自身の指示やAGENTS.mdは残ります。"
+    },
+    {
+      "key": "memoryMode", "title": "既存のCodexメモリを利用", "type": "select", "default": "inherit",
+      "description": "次の新しいチャットから自動注入を制御します。メモリ機能そのものはCodex設定に従い、要約本文の表示やツールによるファイル読取りの禁止を意味しません。",
+      "options": [{"value":"inherit","label":"Codexの設定に従う"},{"value":"include","label":"利用する"},{"value":"exclude","label":"利用しない"}]
+    }
+  ],
   "commands": [
     { "id": "at365.chatcodex.open", "title": "Codexチャットを開く", "activateOnExecute": true }
   ],
