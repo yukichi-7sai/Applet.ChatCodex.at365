@@ -26,7 +26,7 @@ test('実stdio: 初期化・ページング・モデル既定と選択保存', a
   assert.equal(c.chat.models.length, 2);
   assert.deepEqual(c.chat.selection, { model: 'fixture-fast', effort: 'low' });
   await c.chat.select(c.chat.generation, 'fixture-fast', 'high');
-  assert.deepEqual(c.values.get('preferences'), { schemaVersion: 1, model: 'fixture-fast', effort: 'high' });
+  assert.deepEqual(c.values.get('preferences'), { schemaVersion: 1, model: 'fixture-fast', effort: 'high', approvalMode: 'inherit' });
   await assert.rejects(c.chat.select(c.chat.generation, 'fixture-simple', 'high'));
 });
 test('実stdio: 継続・モデル思考量・最終itemの重複防止・新しい会話', async t => {
@@ -123,4 +123,73 @@ test('未対応のサーバー要求に応答し、別会話の完了通知を�
   c.chat.client.unsupported = id => { rejected = id; };
   c.chat.serverRequest({ id: 77, method: 'unknown', params: { threadId: c.chat.threadId } });
   assert.equal(rejected, 77);
+});
+
+test('実stdio: 4つの承認モードを同じ会話へ適用し、継承へ戻すと元の制限を復元', async t => {
+  const c = context(); t.after(() => c.chat.close()); await ready(c);
+  const sent = [], request = c.chat.client.request.bind(c.chat.client);
+  c.chat.client.request = (method, params, ...rest) => { sent.push({ method, params: structuredClone(params) }); return request(method, params, ...rest); };
+  for (const mode of ['inherit', 'ask', 'auto', 'full', 'inherit']) {
+    await c.chat.selectApproval(c.chat.generation, mode);
+    c.chat.send(c.chat.generation, mode + sent.length, 'モードの確認'); await until(() => c.chat.state === 'idle');
+  }
+  const turns = sent.filter(item => item.method === 'turn/start').map(item => item.params);
+  assert.equal(sent.filter(item => item.method === 'thread/start').length, 1);
+  assert.deepEqual(turns.map(p => [p.approvalPolicy, p.approvalsReviewer, p.sandboxPolicy.type]), [
+    ['on-request', 'user', 'readOnly'], ['on-request', 'user', 'workspaceWrite'], ['on-request', 'auto_review', 'workspaceWrite'],
+    ['never', 'user', 'dangerFullAccess'], ['on-request', 'user', 'readOnly'],
+  ]);
+  assert.equal(turns[1].sandboxPolicy.networkAccess, false);
+  assert.deepEqual(turns[1].sandboxPolicy.writableRoots, []);
+  assert.deepEqual(turns[4].sandboxPolicy, turns[0].sandboxPolicy);
+  assert.equal(c.values.get('preferences').approvalMode, 'inherit');
+  assert.equal(sent.some(item => /config\/.+write/i.test(item.method)), false);
+});
+
+test('旧保存値は継承で読み、未知の承認モードは選び直すまで送信しない', async t => {
+  for (const approvalMode of [undefined, 'unknown']) {
+    const saved = { schemaVersion: 1, model: 'fixture-fast', effort: 'low', ...(approvalMode ? { approvalMode } : {}) };
+    let writes = 0;
+    const c = context({ storage: { get: async () => saved, set: async () => writes++ } });
+    t.after(() => c.chat.close()); await ready(c);
+    assert.equal(writes, 0);
+    assert.equal(c.chat.approvalMode, approvalMode ? '' : 'inherit');
+    if (approvalMode) assert.throws(() => c.chat.send(c.chat.generation, 'unknown', 'text'));
+  }
+});
+
+test('承認モードは保存成功後だけ変更し、実行中・不正値・古い世代を拒否', async t => {
+  const c = context(); t.after(() => c.chat.close()); await ready(c);
+  await assert.rejects(c.chat.selectApproval(c.chat.generation, 'unsafe'));
+  await assert.rejects(c.chat.selectApproval(c.chat.generation - 1, 'full'));
+  c.chat.storage.set = async () => { throw Error('save failure'); };
+  await assert.rejects(c.chat.selectApproval(c.chat.generation, 'full'));
+  assert.equal(c.chat.approvalMode, 'inherit');
+  c.chat.send(c.chat.generation, 'running', '遅延');
+  await assert.rejects(c.chat.selectApproval(c.chat.generation, 'full'));
+  assert.equal(c.chat.run.approvalMode, 'inherit');
+});
+
+test('実stdio: Codex側がモードを拒否したら待機へ戻り、自動再送・緩和をしない', async t => {
+  const c = context(); t.after(() => c.chat.close()); await ready(c);
+  await c.chat.selectApproval(c.chat.generation, 'full');
+  const sent = [], request = c.chat.client.request.bind(c.chat.client);
+  c.chat.client.request = (method, params, ...rest) => { sent.push(method); return request(method, params, ...rest); };
+  c.chat.send(c.chat.generation, 'denied', '制限拒否'); await until(() => c.chat.state === 'idle');
+  assert.match(c.chat.detail, /承認モード/); assert.equal(c.chat.approvalMode, 'full');
+  assert.equal(sent.filter(method => method === 'turn/start').length, 1);
+  assert.equal(c.chat.entries.some(item => item.role === 'assistant'), false);
+});
+
+test('実stdio: 入力項目なしのMCP確認は画面へ待機し、明示的な回答だけを返す', async t => {
+  const c = context(); t.after(() => c.chat.close()); await ready(c);
+  const replies = [], respond = c.chat.client.respond.bind(c.chat.client);
+  c.chat.client.respond = (id, result) => { replies.push(result); respond(id, result); };
+  for (const decision of ['accept', 'decline', 'cancel']) {
+    c.chat.send(c.chat.generation, decision, 'MCP確認'); await until(() => c.chat.state === 'awaitingInput');
+    assert.equal(replies.length, ['accept', 'decline', 'cancel'].indexOf(decision));
+    const request = [...c.chat.requests.values()][0]; assert.equal(request.view.kind, 'approval');
+    c.chat.respond(c.chat.generation, request.view.id, JSON.stringify({ decision })); await until(() => c.chat.state === 'idle');
+    assert.deepEqual(replies.at(-1), { action: decision, content: decision === 'accept' ? {} : null });
+  }
 });

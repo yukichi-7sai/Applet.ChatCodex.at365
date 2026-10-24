@@ -26,13 +26,20 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     ? { data: [{ model: 'fixture-simple', id: 'simple-id', displayName: 'Fixture Simple', defaultReasoningEffort: '', supportedReasoningEfforts: [] }], nextCursor: null }
     : { data: [{ model: 'fixture-fast', id: 'fast-id', displayName: 'Fixture Fast', isDefault: true, defaultReasoningEffort: 'low',
       supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }], nextCursor: 'second' };
-  else if (msg.method === 'thread/start') result = { thread: { id: 'thread-' + ++thread } };
+  else if (msg.method === 'thread/start') result = { thread: { id: 'thread-' + ++thread }, approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: { type: 'readOnly', networkAccess: false } };
   else if (msg.method === 'turn/start') {
     const text = msg.params.input[0].text;
+    if (text.includes('制限拒否') && msg.params.approvalPolicy === 'never') {
+      send({ id: msg.id, error: { code: -32602, message: 'Fixture policy does not allow this mode.' } }); return;
+    }
     current = { thread: msg.params.threadId, turn: 'turn-' + ++turn, item: 'item-' + turn };
     send({ id: msg.id, result: { turn: { id: current.turn, status: 'inProgress' } } });
     notify('turn/started', { threadId: current.thread, turn: { id: current.turn, status: 'inProgress' } });
-    if (text.includes('承認')) {
+    if (text.includes('MCP確認')) {
+      waiting = 900 + turn;
+      send({ id: waiting, method: 'mcpServer/elicitation/request', params: { threadId: current.thread, turnId: current.turn,
+        mode: 'form', message: 'MCPの操作を許可しますか？', requestedSchema: { type: 'object', properties: {} } } });
+    } else if (text.includes('承認')) {
       waiting = 900 + turn;
       send({ id: waiting, method: 'item/commandExecution/requestApproval', params: { threadId: current.thread, turnId: current.turn, reason: 'Fixtureの確認です。', availableDecisions: ['accept', 'decline', 'cancel'] } });
     } else if (text.includes('質問')) {

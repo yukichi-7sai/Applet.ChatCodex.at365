@@ -11,14 +11,12 @@
 <body>
   <main>
     <header>
-      <label>モデル<select id="model" data-testid="model" aria-label="モデル"></select></label>
-      <label>思考量<select id="effort" data-testid="effort" aria-label="思考量"></select></label>
+      <div class="connection">
+        <span id="status" data-testid="status" role="status"></span>
+        <button id="connect" data-testid="connect" type="button" hidden>再接続</button>
+      </div>
       <button id="new-chat" data-testid="new-chat" type="button">新しいチャット</button>
     </header>
-    <div class="connection">
-      <span id="status" data-testid="status" role="status"></span>
-      <button id="connect" data-testid="connect" type="button" hidden>再接続</button>
-    </div>
     <div id="notice" data-testid="notice" role="alert" hidden></div>
     <section id="conversation" data-testid="conversation" aria-label="会話" tabindex="0">
       <p id="empty">Codexに相談する内容を入力してください。</p>
@@ -27,13 +25,27 @@
       <div id="requests" data-testid="requests"></div>
     </section>
     <form id="composer">
-      <label class="input-label" for="input">メッセージ</label>
-      <textarea id="input" data-testid="input" rows="3" placeholder="AppDockの設定について相談する" aria-describedby="input-hint"></textarea>
-      <div class="composer-footer">
-        <span id="input-hint">Enterで送信・Shift+Enterで改行</span>
-        <button id="send" data-testid="send" class="primary" type="submit">送信</button>
+      <div class="composer-shell">
+        <label class="sr-only" for="input">メッセージ</label>
+        <textarea id="input" data-testid="input" rows="3" placeholder="AppDockの設定について相談する" aria-describedby="input-hint"></textarea>
+        <div class="composer-footer">
+          <button id="approval" data-testid="approval" class="approval-trigger" type="button" popovertarget="approval-menu" aria-haspopup="menu" aria-expanded="false" aria-label="承認モード">
+            <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path id="approval-icon"></path></svg>
+            <span id="approval-label">Codexの設定に従う</span><span class="chevron" aria-hidden="true">⌄</span>
+          </button>
+          <div class="model-controls">
+            <label class="compact-select"><span class="sr-only">モデル</span><select id="model" data-testid="model" aria-label="モデル"></select><span class="chevron" aria-hidden="true">⌄</span></label>
+            <label class="compact-select effort-select"><span class="sr-only">思考量</span><select id="effort" data-testid="effort" aria-label="思考量"></select><span class="chevron" aria-hidden="true">⌄</span></label>
+          </div>
+          <button id="send" data-testid="send" class="send-button" type="submit" aria-label="送信" title="送信"><span id="send-label" class="sr-only">送信</span><svg viewBox="0 0 24 24" aria-hidden="true"><path id="send-icon" d="M12 19V5m-6 6 6-6 6 6"></path></svg></button>
+        </div>
       </div>
+      <span id="input-hint">Enterで送信・Shift+Enterで改行</span>
     </form>
+    <div id="approval-menu" data-testid="approval-menu" popover="auto" role="menu" aria-label="Codexのアクションの承認方法">
+      <p class="menu-heading">Codexのアクションの承認方法</p>
+      <div id="approval-options"></div>
+    </div>
   </main>
 </body>
 </html>

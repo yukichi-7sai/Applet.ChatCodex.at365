@@ -3,7 +3,7 @@
   "id": "at365.chatcodex",
   "name": "Applet.ChatCodex.at365",
   "displayName": "ChatCodex",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minimumHostVersion": "0.86.13",
   "runtime": "node",
   "entry": "src/applet.cjs",
@@ -20,6 +20,7 @@
     { "id": "chat.connect", "parameters": { "generation": "number" } },
     { "id": "chat.send", "parameters": { "generation": "number", "requestId": "string", "text": "string" } },
     { "id": "chat.select", "parameters": { "generation": "number", "model": "string", "effort": "string" } },
+    { "id": "chat.approval", "parameters": { "generation": "number", "mode": "string" } },
     { "id": "chat.new", "parameters": { "generation": "number" } },
     { "id": "chat.stop", "parameters": { "generation": "number" } },
     { "id": "chat.respond", "parameters": { "generation": "number", "requestId": "string", "response": "string" } }

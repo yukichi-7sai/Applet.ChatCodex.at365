@@ -5,7 +5,7 @@
 - [調査・検証記録](VERIFICATION.md)
 - [本体側の不足と境界](docs/host-gaps.md)
 
-初期実装はチャットとモデル・思考量の選択に限定する。設計の初回コミットと実装・検証の記録はVERIFICATIONへ分けて記載する。
+実装はチャットとモデル・思考量・4つの承認モードの選択に限定する。設計の初回コミットと実装・検証の記録はVERIFICATIONへ分けて記載する。
 
 ## 共通技術資料
 
@@ -25,10 +25,15 @@ Node Applet（CommonJS JavaScript）とローカルHTML/JavaScript UI。実行�
 | `dev.bat build` | 構文検査、out/Applet.ChatCodex.at365への組立 |
 | `dev.bat ui` | 固定AppDock EXE＋隔離設定＋疑似CodexのGUI試験 |
 | `dev.bat probe` | 実Codexの会話と既存MCP情報取得。設定変更は行わない |
+| `dev.bat approval` | 実Codexを子プロセス限定の厳しい設定で起動し、無変更の確認用MCP・承認カード・4モード・継承値の復元を隔離GUIで確認 |
 | `publish.bat` | 本Appletだけ発行し、個別update.zip/update.jsonを生成 |
 
 発行には本体の既存AppDock.Updater.exeを使う。通常の共通梱包スクリプトは本体側を再ビルドするため、本体変更禁止のこの作業では既存の同じpackerを直接呼び出す。既存packerがない場合は失敗させ、黙って本体を生成しない。
 
 実Codex GUI試験は固定Nodeで `scripts/real-ui-test.cjs`、親プロセス異常終了の確認は `scripts/lifecycle-probe.cjs` を実行する。実Codex試験はサインイン済み環境とモデル利用を伴うので、通常の単体試験には含めない。本文・認証を検証ログへ記録しない。
+
+`dev.bat approval` はCodexの起動引数だけでon-request/user/read-onlyと確認用MCPを指定し、ユーザーのconfig.tomlは変更しない。診断用entryで元のApplet処理を包み、実行時の承認設定だけを証跡へ残す。確認用MCPは承認回答を返すだけで、AppDock設定・ファイル・外部状態を変更しない。ネイティブのmcpServer/tool/callで実MCP確認要求を発生させ、カードで許可した後にモデルへの送信を続ける。全モードの返答と、フルアクセスから継承へ戻した際のread-only復元を確認する。これはKAGUYA実機や実AppDock設定変更の確認とは区別する。
+
+`dev.bat ui` と `dev.bat approval` は、任意の `CHATCODEX_TEST_PACKAGE` に発行済みAppletフォルダーを指定すると、そのコピーを隔離profileで検証する。通常はoutを使う。実Codexは元の導入場所の実体を起動し、隣接するツール実行基盤を失わないようにする。隔離GUIのLOCALAPPDATA変更はCodex子プロセスだけ通常値へ戻す。認証ファイルはコピーしない。
 
 発行先は `A:/40.ARTIFACT/Applet.ChatCodex.at365`。deploy.batは配置先AppDockフォルダーを引数に取り、発行済みのAppletだけをコピーする。配布・実利用先への配置・外部公開はそれぞれ依頼範囲に従う。

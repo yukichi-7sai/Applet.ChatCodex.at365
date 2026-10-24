@@ -79,7 +79,7 @@ class CodexProcess extends EventEmitter {
       child.once('error', () => reject(Error('Codexを起動できませんでした。')));
     });
     await this.request('initialize', {
-      clientInfo: { name: 'appdock_chatcodex', title: 'AppDock ChatCodex', version: '0.1.0' },
+      clientInfo: { name: 'appdock_chatcodex', title: 'AppDock ChatCodex', version: require('../extension.json').version },
       capabilities: { experimentalApi: false },
     });
     this.send({ method: 'initialized', params: {} });

@@ -1,6 +1,7 @@
 'use strict';
 const { randomUUID, createHash } = require('node:crypto');
 const { CodexProcess } = require('./codex-process.cjs');
+const { modes, validMode, threadDefaults, turnPolicy } = require('./approval-modes.cjs');
 const busy = new Set(['connecting', 'running', 'awaitingInput', 'stopping']);
 const textLimit = 32768;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -29,6 +30,7 @@ class Chat {
     this.detail = '';
     this.models = [];
     this.selection = { model: '', effort: '' };
+    this.approvalMode = 'inherit';
     this.entries = [];
     this.revision = 0;
     this.order = 0;
@@ -95,7 +97,7 @@ class Chat {
     const candidates = this.entries.filter(entry => reset || entry.revision > after).sort((a, b) => a.revision - b.revision);
     const result = {
       generation: this.generation, reset, state: this.state, detail: this.detail,
-      models: this.models, selection: this.selection, saving: this.saving,
+      models: this.models, selection: this.selection, approvalMode: this.approvalMode, approvalModes: modes, saving: this.saving,
       requests: [...this.requests.values()].map(request => request.view),
       entries: [], after: reset ? 0 : after, more: false,
       minOrder: this.entries[0]?.order || 0, omitted: !!this.omitted,
@@ -119,7 +121,7 @@ class Chat {
     const epoch = ++this.generation;
     this.connectionEpoch = epoch;
     this.entries = []; this.items = new Map(); this.requests.clear(); this.accepted.clear();
-    this.threadId = null; this.run = null; this.omitted = false; this.models = [];
+    this.threadId = null; this.threadDefaults = null; this.run = null; this.omitted = false; this.models = [];
     this.state = 'connecting'; this.detail = 'Codexに接続しています。'; this.touch();
     void this.connectAsync(epoch);
     return { accepted: true };
@@ -132,7 +134,11 @@ class Chat {
       try { saved = await this.storage.get('preferences'); } catch { this.preferenceWarning = '保存した選択を読み取れません。選び直して保存してください。'; }
       if (saved != null && (!object(saved) || saved.schemaVersion !== 1 || typeof saved.model !== 'string' || typeof saved.effort !== 'string'))
         this.preferenceWarning = '保存した選択の形式に対応していません。選び直して保存してください。';
-      else if (saved) this.selection = { model: saved.model, effort: saved.effort };
+      else if (saved) {
+        this.selection = { model: saved.model, effort: saved.effort };
+        this.approvalMode = saved.approvalMode === undefined ? 'inherit' : validMode(saved.approvalMode) ? saved.approvalMode : '';
+        if (!this.approvalMode) this.preferenceWarning = '保存した承認モードに対応していません。選び直してください。';
+      }
       const info = await this.getHostInfo();
       if (typeof info?.instanceId !== 'string') throw Error('起動元AppDockの情報を取得できません。Appletの情報取得許可を確認してください。');
       this.hostInstanceId = info.instanceId;
@@ -189,7 +195,7 @@ class Chat {
   defaultEffort(model) { return model.efforts.includes(model.defaultEffort) ? model.defaultEffort : ''; }
   validSelection() {
     const model = this.models.find(model => model.model === this.selection.model);
-    return model && (!model.efforts.length || model.efforts.includes(this.selection.effort));
+    return validMode(this.approvalMode) && model && (!model.efforts.length || model.efforts.includes(this.selection.effort));
   }
   async select(generation, model, effort) {
     this.assertGeneration(generation);
@@ -199,9 +205,22 @@ class Chat {
       throw Error('このモデルで利用できる思考量を選んでください。');
     this.saving = true; this.touch();
     try {
-      await this.storage.set('preferences', { schemaVersion: 1, model, effort });
+      if (!validMode(this.approvalMode)) throw Error('承認モードを選んでください。');
+      await this.storage.set('preferences', { schemaVersion: 1, model, effort, approvalMode: this.approvalMode });
       this.assertGeneration(generation);
       this.selection = { model, effort }; this.preferenceWarning = ''; this.detail = '';
+    } finally { this.saving = false; this.touch(); }
+    return { saved: true };
+  }
+  async selectApproval(generation, mode) {
+    this.assertGeneration(generation);
+    if (this.state !== 'idle' || this.saving) throw Error('待機中に承認モードを選んでください。');
+    if (!validMode(mode)) throw Error('承認モードが不正です。');
+    this.saving = true; this.touch();
+    try {
+      await this.storage.set('preferences', { schemaVersion: 1, ...this.selection, approvalMode: mode });
+      this.assertGeneration(generation);
+      this.approvalMode = mode; this.preferenceWarning = ''; this.detail = '';
     } finally { this.saving = false; this.touch(); }
     return { saved: true };
   }
@@ -218,7 +237,7 @@ class Chat {
     this.entry('user', text);
     this.state = 'running'; this.detail = '応答を生成しています。';
     this.items = new Map();
-    const run = { generation, canceled: false, interrupted: false, selection: { ...this.selection } };
+    const run = { generation, canceled: false, interrupted: false, selection: { ...this.selection }, approvalMode: this.approvalMode };
     this.run = run; this.touch();
     void this.generate(run, text);
     return { accepted: true };
@@ -233,18 +252,26 @@ class Chat {
         });
         if (this.run !== run) return;
         if (!result?.thread?.id) throw Error('Codexの会話開始応答に対応していません。');
+        this.threadDefaults = threadDefaults(result);
         this.threadId = result.thread.id;
       }
       if (run.canceled) { this.finish('interrupted'); return; }
-      const params = { threadId: this.threadId, input: [{ type: 'text', text }], model: run.selection.model };
+      const params = { threadId: this.threadId, input: [{ type: 'text', text }], model: run.selection.model,
+        ...turnPolicy(run.approvalMode, this.threadDefaults) };
       if (run.selection.effort) params.effort = run.selection.effort;
       const result = await this.client.request('turn/start', params);
       if (this.run !== run) return;
       if (!result?.turn?.id) throw Error('Codexの送信応答に対応していません。');
       run.turnId = result.turn.id;
       if (run.canceled) this.interrupt(run);
-    } catch {
-      if (this.run === run) this.disconnected('Codexへの送信結果を確認できません。操作済みの可能性があるため、自動再送していません。');
+    } catch (error) {
+      if (this.run !== run) return;
+      if (error.code !== undefined || error.message?.startsWith('Codexの承認設定')) {
+        this.finish('failed');
+        this.detail = error.message?.startsWith('Codexの承認設定') ? error.message
+          : 'Codexが送信を受け付けませんでした。承認モードとCodex側の制限を確認してください。自動再送していません。';
+        this.touch();
+      } else this.disconnected('Codexへの送信結果を確認できません。操作済みの可能性があるため、自動再送していません。');
     }
   }
   notification({ method, params: p = {} }) {
@@ -315,7 +342,7 @@ class Chat {
     this.assertGeneration(generation);
     if (this.state !== 'idle' || this.saving) throw Error('待機中に新しいチャットを開始してください。');
     this.generation++; this.entries = []; this.items = new Map(); this.accepted.clear(); this.requests.clear();
-    this.threadId = null; this.detail = ''; this.omitted = false; this.touch();
+    this.threadId = null; this.threadDefaults = null; this.detail = ''; this.omitted = false; this.touch();
     return { accepted: true };
   }
   disconnected(message) {
@@ -368,9 +395,20 @@ class Chat {
     } else if (msg.method === 'mcpServer/elicitation/request' && ['form', 'openai/form'].includes(p.mode)) {
       const schema = p.requestedSchema;
       const fields = object(schema?.properties) ? Object.entries(schema.properties) : [];
-      if (!fields.length || fields.length > 12 || fields.some(([, field]) => !['string', 'number', 'integer', 'boolean'].includes(field.type) || field.items || field.format === 'password')) {
-        this.client.respond(msg.id, { action: 'cancel', content: null }); return;
+      if (schema?.type !== 'object' || !object(schema.properties) ||
+          (schema.required != null && (!Array.isArray(schema.required) || schema.required.some(key => !Object.hasOwn(schema.properties, key)))) ||
+          fields.length > 12 || fields.some(([, field]) => !object(field) || !['string', 'number', 'integer', 'boolean'].includes(field.type) || field.items || field.format === 'password')) {
+        this.client.respond(msg.id, { action: 'cancel', content: null });
+        this.entry('assistant', 'MCPから届いた確認フォームに対応していないため、確認をキャンセルしました。操作結果を確認してください。'); return;
       }
+      if (!fields.length) {
+        view = { id, kind: 'approval', title: 'MCPからの確認', detail: short(p.message), choices: ['accept', 'decline', 'cancel'] };
+        cancel = { action: 'cancel', content: null };
+        accept = answer => {
+          if (!['accept', 'decline', 'cancel'].includes(answer.decision)) throw Error('確認の選択肢が不正です。');
+          return { action: answer.decision, content: answer.decision === 'accept' ? {} : null };
+        };
+      } else {
       const questions = fields.map(([key, field]) => ({
         id: key, title: short(field.title || field.description || key, 1000),
         options: Array.isArray(field.enum) ? field.enum.map(value => ({ label: String(value) })) : field.type === 'boolean' ? [{ label: 'true' }, { label: 'false' }] : [],
@@ -396,9 +434,10 @@ class Chat {
         }
         return { action: 'accept', content };
       };
+      }
     } else if (msg.method === 'mcpServer/elicitation/request') {
       this.client.respond(msg.id, { action: 'cancel', content: null });
-      this.detail = 'この形式のMCP確認には対応していません。'; this.touch(); return;
+      this.entry('assistant', 'この形式のMCP確認には対応していないため、確認をキャンセルしました。操作結果を確認してください。'); return;
     } else {
       this.client.unsupported(msg.id);
       this.detail = 'このCodex確認形式には対応していません。処理を継続できない場合は停止してください。'; this.touch(); return;

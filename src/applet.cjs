@@ -20,6 +20,7 @@ function createApplet(options = {}) {
         case 'chat.read': return chat.read(input.generation, input.after);
         case 'chat.connect': return chat.connect(input.generation);
         case 'chat.select': return chat.select(input.generation, input.model, input.effort);
+        case 'chat.approval': return chat.selectApproval(input.generation, input.mode);
         case 'chat.send': return chat.send(input.generation, input.requestId, input.text);
         case 'chat.new': return chat.newChat(input.generation);
         case 'chat.stop': return chat.stop(input.generation);

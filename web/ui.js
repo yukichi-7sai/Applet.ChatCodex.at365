@@ -1,12 +1,59 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const effortNames = { none: 'なし', minimal: '最小', low: '低', medium: '標準', high: '高', xhigh: '非常に高い', max: '最大', ultra: '最高' };
+const approvalIcons = {
+  inherit: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM10 2h4l1 3 3 1 3 1v4l-2 1-1 3 1 3-3 3-3-1-3 1-3-2-1-3-3-1V9l3-1 1-3Z',
+  ask: 'M9 11V5a2 2 0 0 1 4 0v6-7a2 2 0 0 1 4 0v8-5a2 2 0 0 1 4 0v7c0 5-3 8-8 8-3 0-5-2-7-5l-3-4a2 2 0 0 1 3-3l3 3Z',
+  auto: 'M12 3a9 9 0 1 0 9 9M12 6v6l4 2M17 4l2 2 3-3',
+  full: 'M12 3 3 7v6c0 4 4 7 9 9 5-2 9-5 9-9V7ZM12 8v5m0 4h.01',
+};
 let generation = 0, after = 0, state, draftSelection, performing = false, reading = false, readAgain = false, autoConnected = false, composing = false;
 const entries = new Map(), bubbles = new Map(), cards = new Map();
 const labels = { disconnected: '未接続', connecting: '接続中…', idle: '接続済み', running: '応答中…', awaitingInput: '返答を待っています', stopping: '停止中…', error: '接続を確認してください' };
 const call = (id, input = {}) => window.appletPage.call('actions.invoke', { id, input: { generation, ...input } });
 function notice(message = '') { $('notice').textContent = message; $('notice').hidden = !message; }
 function option(value, label) { const node = document.createElement('option'); node.value = value; node.textContent = label; return node; }
+function approvalIcon(mode) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true'); svg.classList.add('control-icon');
+  const path = document.createElementNS(svg.namespaceURI, 'path'); path.setAttribute('d', approvalIcons[mode] || approvalIcons.inherit); svg.append(path); return svg;
+}
+function renderApproval(idle) {
+  const modes = state.approvalModes || [];
+  const selected = modes.find(mode => mode.id === state.approvalMode);
+  $('approval-label').textContent = selected?.label || '承認モードを選択';
+  $('approval-icon').setAttribute('d', approvalIcons[state.approvalMode] || approvalIcons.inherit);
+  $('approval').disabled = !idle;
+  $('approval').classList.toggle('is-full', state.approvalMode === 'full');
+  $('approval').setAttribute('aria-label', '承認モード: ' + (selected?.label || '未選択'));
+  $('approval').title = selected?.description || '承認モードを選んでください。';
+  if (!$('approval-options').children.length) for (const mode of modes) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'mode-option';
+    button.dataset.mode = mode.id; button.setAttribute('role', 'menuitemradio');
+    button.classList.toggle('is-full', mode.id === 'full');
+    const copy = document.createElement('span'); copy.className = 'mode-copy';
+    const title = document.createElement('span'); title.className = 'mode-title'; title.textContent = mode.label;
+    const description = document.createElement('span'); description.className = 'mode-description'; description.textContent = mode.description;
+    const check = document.createElement('span'); check.className = 'mode-check'; check.textContent = '✓'; check.setAttribute('aria-hidden', 'true');
+    copy.append(title, description); button.append(approvalIcon(mode.id), copy, check);
+    button.addEventListener('click', () => {
+      $('approval-menu').hidePopover(); $('approval').focus();
+      void perform(() => call('chat.approval', { mode: mode.id }));
+    });
+    $('approval-options').append(button);
+  }
+  for (const button of $('approval-options').children) {
+    button.disabled = !idle; button.setAttribute('aria-checked', String(button.dataset.mode === state.approvalMode));
+    button.tabIndex = button.dataset.mode === state.approvalMode ? 0 : -1;
+  }
+  if (!idle && $('approval-menu').matches(':popover-open')) $('approval-menu').hidePopover();
+}
+function positionApprovalMenu() {
+  const menu = $('approval-menu'), anchor = $('approval').getBoundingClientRect();
+  const box = menu.getBoundingClientRect();
+  menu.style.left = Math.max(12, Math.min(anchor.left, innerWidth - box.width - 12)) + 'px';
+  menu.style.top = Math.max(12, Math.min(anchor.top - box.height - 8, innerHeight - box.height - 12)) + 'px';
+}
 function renderControls() {
   if (!state) return;
   const selected = draftSelection || state.selection;
@@ -19,12 +66,16 @@ function renderControls() {
   for (const effort of model?.efforts || []) $('effort').append(option(effort, effortNames[effort] || effort));
   $('effort').value = selected.effort;
   const idle = state.state === 'idle' && !performing && !state.saving;
+  renderApproval(idle);
   $('model').disabled = !idle;
   $('effort').disabled = !idle || !model?.efforts.length;
   $('new-chat').disabled = !idle || !!draftSelection;
   const active = ['running', 'awaitingInput', 'stopping'].includes(state.state);
-  $('send').textContent = active ? (state.state === 'stopping' ? '停止中…' : '停止') : '送信';
-  const valid = model && (!model.efforts.length || model.efforts.includes(selected.effort));
+  const sendLabel = active ? (state.state === 'stopping' ? '停止中…' : '停止') : '送信';
+  $('send-label').textContent = sendLabel; $('send').setAttribute('aria-label', sendLabel); $('send').title = sendLabel;
+  $('send').classList.toggle('is-stop', active);
+  $('send-icon').setAttribute('d', active ? 'M7 7h10v10H7Z' : 'M12 19V5m-6 6 6-6 6 6');
+  const valid = state.approvalModes?.some(mode => mode.id === state.approvalMode) && model && (!model.efforts.length || model.efforts.includes(selected.effort));
   $('send').disabled = performing || (active ? state.state === 'stopping' : !idle || !valid || !!draftSelection || !$('input').value.trim());
   $('connect').hidden = !['error', 'disconnected'].includes(state.state);
   $('connect').disabled = performing;
@@ -163,6 +214,20 @@ $('composer').addEventListener('submit', event => {
 });
 $('new-chat').addEventListener('click', () => void perform(async () => { await call('chat.new'); $('input').value = ''; }));
 $('connect').addEventListener('click', () => void perform(() => call('chat.connect')));
+$('approval-menu').addEventListener('toggle', event => {
+  const open = event.newState === 'open'; $('approval').setAttribute('aria-expanded', String(open));
+  if (open) { positionApprovalMenu(); $('approval-options').querySelector('[aria-checked="true"]')?.focus(); }
+});
+$('approval-menu').addEventListener('keydown', event => {
+  const buttons = [...$('approval-options').querySelectorAll('button:enabled')];
+  if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key) || !buttons.length) return;
+  event.preventDefault();
+  const current = buttons.indexOf(document.activeElement);
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+    : (current + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+  buttons[next].focus();
+});
+window.addEventListener('resize', () => { if ($('approval-menu').matches(':popover-open')) positionApprovalMenu(); });
 const unsubscribe = window.appletPage.onChanged(() => {
   void window.appletPage.snapshot().then(snapshot => { document.documentElement.style.colorScheme = snapshot.dark ? 'dark' : 'light'; }).catch(() => {});
   void refresh();
