@@ -35,7 +35,14 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     current = { thread: msg.params.threadId, turn: 'turn-' + ++turn, item: 'item-' + turn };
     send({ id: msg.id, result: { turn: { id: current.turn, status: 'inProgress' } } });
     notify('turn/started', { threadId: current.thread, turn: { id: current.turn, status: 'inProgress' } });
-    if (text.includes('ツール詳細')) {
+    if (text.includes('ログ大量')) {
+      for (let n = 0; n < 230; n++) {
+        const item = { id: 'storm-' + turn + '-' + n, type: 'mcpToolCall', server: 'fixture', tool: 'log-storm-' + n, arguments: { n }, status: 'inProgress' };
+        notify('item/started', { threadId: current.thread, turnId: current.turn, item });
+        notify('item/completed', { threadId: current.thread, turnId: current.turn, item: { ...item, status: 'completed' } });
+      }
+      timer = setTimeout(() => finish('応答: ' + text), 30);
+    } else if (text.includes('ツール詳細')) {
       const tool = { id: 'tool-' + turn, type: 'mcpToolCall', server: 'fixture', tool: 'diagnostic', status: 'inProgress', arguments: { password: 'fixture-password' } };
       notify('item/started', { threadId: current.thread, turnId: current.turn, item: tool });
       notify('item/completed', { threadId: current.thread, turnId: current.turn, item: { ...tool, status: 'completed', result: { content: [

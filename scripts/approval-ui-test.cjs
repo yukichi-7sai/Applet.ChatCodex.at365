@@ -34,7 +34,7 @@ const settings = require(path.join(host, 'out/main/shared/settings-schema')).cre
 settings.host.hardwareAcceleration = false; settings.host.closeToTray = false; settings.host.soundEnabled = false;
 settings.globalShortcutCommands = []; settings.gestures.enabled = false;
 settings.updates.checkHostOnStartup = false; settings.updates.checkAppletsOnStartup = false;
-settings.extensions = { 'at365.chatcodex': { enabled: true, settings: { displayMode: 'trace', sendOperationInstructions: false, memoryMode: 'exclude' } } };
+settings.extensions = { 'at365.chatcodex': { enabled: true, settings: { chatDisplayMode: 'detail', wireLogEnabled: true, sendOperationInstructions: false, memoryMode: 'exclude' } } };
 fs.writeFileSync(path.join(profile, 'settings.json'), JSON.stringify(settings));
 let instance, page;
 (async () => {
@@ -73,7 +73,7 @@ let instance, page;
       ['on-request', 'user', 'workspaceWrite'], ['on-request', 'auto_review', 'workspaceWrite'], ['never', 'user', 'dangerFullAccess'], ['on-request', 'user', 'readOnly'],
     ]);
     assert.equal(baseline.operationInstructionsSent, false); assert.equal(baseline.memoryUse, false);
-    await instance.save({ extensionId: 'at365.chatcodex', settings: { displayMode: 'detail', sendOperationInstructions: true, memoryMode: 'include' } });
+    await instance.save({ extensionId: 'at365.chatcodex', settings: { chatDisplayMode: 'detail', sendOperationInstructions: true, memoryMode: 'include' } });
     await until(() => page.getByTestId('settings-note').isVisible(), 'startup options pending');
     await page.getByTestId('new-chat').click();
     await until(async () => await page.getByTestId('settings-note').isHidden() && await page.getByTestId('new-chat').isEnabled(), 'new startup options ready');

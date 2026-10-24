@@ -41,7 +41,7 @@ class Chat {
     this.closed = false;
     this.saving = false;
     this.settings = normalizeSettings(settings);
-    this.diagnosticBytes = 0; this.diagnosticCount = 0;
+    this.resetDiagnostics();
   }
   touch() {
     if (this.closed || this.notifyTimer) return;
@@ -61,34 +61,48 @@ class Chat {
     return parts;
   }
   diagnostic(kind, title, value) {
-    if (this.settings.displayMode === 'normal' || (kind === 'trace' && this.settings.displayMode !== 'trace')) return;
-    if (this.diagnosticBytes > 512 * 1024 || this.diagnosticCount >= 400) {
-      if (!this.diagnosticsOmitted) {
-        this.diagnosticsOmitted = true;
-        this.entry('system', 'この会話の詳細表示が上限に達しました。新しいチャットで記録を再開できます。', randomUUID(), { kind: 'detail', title: '詳細表示を省略' });
-      }
-      return;
-    }
+    if (kind === 'trace' ? !this.settings.wireLogEnabled : this.settings.displayMode !== 'detail') return;
+    const log = this.diagnostics[kind];
+    if (!log) return;
     const text = format(value);
-    this.diagnosticBytes += Buffer.byteLength(text); this.diagnosticCount++;
-    this.entry('system', text, randomUUID(), { kind, title: title.slice(0, 200) });
+    const id = randomUUID(), bytes = Buffer.byteLength(text);
+    this.entry('system', text, id, { kind, title: title.slice(0, 200) });
+    log.messages.push({ id, bytes }); log.bytes += bytes;
+    const removed = new Set();
+    while (log.bytes > 512 * 1024 || log.messages.length > 400) {
+      const oldest = log.messages.shift(); log.bytes -= oldest.bytes; removed.add(oldest.id);
+    }
+    if (removed.size) {
+      this.entries = this.entries.filter(entry => !removed.has(entry.messageId));
+      log.omitted = true;
+    }
+    this.touch();
+  }
+  resetDiagnostics() {
+    this.diagnostics = { detail: { bytes: 0, messages: [], omitted: false }, trace: { bytes: 0, messages: [], omitted: false } };
   }
   setSettings(settings) {
     const previous = this.settings.displayMode;
+    const previousWire = this.settings.wireLogEnabled;
     this.settings = normalizeSettings(settings);
     if (previous === 'normal' && this.settings.displayMode !== 'normal') {
       this.diagnostic('detail', '詳細表示の範囲', '変更後に受け取る情報を表示します。過去の通信は追加取得しません。Codex内部の最終指示やメモリ要約本文は、APIが返さない場合は表示できません。');
       if (this.threadContext) this.diagnostic('detail', 'この会話の開始時の情報', this.threadContext);
     }
+    if (!previousWire && this.settings.wireLogEnabled)
+      this.diagnostic('trace', '通信ログの範囲', '有効にした後の通信を表示します。古い通信ログから整理し、最新の記録を続けます。過去の通信は追加取得しません。');
     this.touch();
   }
   trim() {
-    let size = this.entries.reduce((sum, entry) => sum + Buffer.byteLength(entry.text), 0);
-    while (size > 8 * 1024 * 1024 && this.entries.length > 1) {
-      if (this.entries[0].active) break;
-      size -= Buffer.byteLength(this.entries.shift().text);
-      this.omitted = true;
+    let size = this.entries.reduce((sum, entry) => sum + (entry.kind ? 0 : Buffer.byteLength(entry.text)), 0);
+    const removed = new Set();
+    for (const entry of this.entries) {
+      if (size <= 8 * 1024 * 1024) break;
+      if (entry.kind) continue;
+      if (entry.active) break;
+      size -= Buffer.byteLength(entry.text); removed.add(entry.id);
     }
+    if (removed.size) { this.entries = this.entries.filter(entry => !removed.has(entry.id)); this.omitted = true; }
   }
   append(itemId, delta) {
     if (!delta) return;
@@ -124,12 +138,15 @@ class Chat {
     const result = {
       generation: this.generation, reset, state: this.state, detail: this.detail,
       displayMode: this.settings.displayMode,
+      wireLogEnabled: this.settings.wireLogEnabled,
+      diagnosticsOmitted: { detail: this.diagnostics.detail.omitted, trace: this.diagnostics.trace.omitted },
       sendKey: this.settings.sendKey,
       settingsPending: !!this.threadOptions && JSON.stringify(this.threadOptions) !== JSON.stringify(startupOptions(this.settings)),
       models: this.models, selection: this.selection, approvalMode: this.approvalMode, approvalModes: modes, saving: this.saving,
       requests: [...this.requests.values()].map(request => request.view),
       entries: [], after: reset ? 0 : after, more: false,
       minOrder: this.entries[0]?.order || 0, omitted: !!this.omitted,
+      minOrders: Object.fromEntries(['message', 'detail', 'trace'].map(kind => [kind, this.entries.find(entry => (entry.kind || 'message') === kind)?.order || this.order + 1])),
     };
     let bytes = Buffer.byteLength(JSON.stringify(result));
     for (const entry of candidates) {
@@ -150,7 +167,7 @@ class Chat {
     const epoch = ++this.generation;
     this.connectionEpoch = epoch;
     this.entries = []; this.items = new Map(); this.requests.clear(); this.accepted.clear();
-    this.threadOptions = null; this.threadContext = null; this.diagnosticBytes = 0; this.diagnosticCount = 0; this.diagnosticsOmitted = false;
+    this.threadOptions = null; this.threadContext = null; this.resetDiagnostics();
     this.threadId = null; this.threadDefaults = null; this.run = null; this.omitted = false; this.models = [];
     this.state = 'connecting'; this.detail = 'Codexに接続しています。'; this.touch();
     void this.connectAsync(epoch);
@@ -175,7 +192,7 @@ class Chat {
       if (this.closed || epoch !== this.generation) return;
       client = this.clientFactory(); this.client = client;
       client.on('wire', event => {
-        if (epoch === this.connectionEpoch && !this.closed && this.settings.displayMode === 'trace') {
+        if (epoch === this.connectionEpoch && !this.closed && this.settings.wireLogEnabled) {
           try { this.diagnostic('trace', event.direction + ' · ' + (event.method || '応答'), wireView(event)); } catch {}
         }
       });
@@ -390,7 +407,7 @@ class Chat {
     this.assertGeneration(generation);
     if (this.state !== 'idle' || this.saving) throw Error('待機中に新しいチャットを開始してください。');
     this.generation++; this.entries = []; this.items = new Map(); this.accepted.clear(); this.requests.clear();
-    this.threadOptions = null; this.threadContext = null; this.diagnosticBytes = 0; this.diagnosticCount = 0; this.diagnosticsOmitted = false;
+    this.threadOptions = null; this.threadContext = null; this.resetDiagnostics();
     this.threadId = null; this.threadDefaults = null; this.detail = ''; this.omitted = false; this.touch();
     return { accepted: true };
   }

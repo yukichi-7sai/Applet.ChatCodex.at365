@@ -35,7 +35,7 @@ Node Applet（CommonJS JavaScript）とローカルHTML/JavaScript UI。実行�
 
 固定Nodeで `scripts/startup-probe.cjs` を実行すると、実App Serverのthread/startでメモリ指定の継承／true／falseと不正値拒否を確認する。モデルへの送信は行わず、Codex設定ファイルの前後hash一致を記録する。自動注入されたメモリ本文は収集しない。メモリ機能そのものはCodex設定に従う。
 
-`dev.bat ui` は送信キーの既定Ctrl+Enter・即時Enter切替・改行・IMEイベントの抑止、詳細／通信の折りたたみ、秘密値の伏せ字とHTML非実行、開始時設定の変更通知も確認する。IME試験は合成イベントであり、物理キーボードでの日本語変換操作とは区別する。`dev.bat approval` は開始指示とメモリ指定の変更が新しい会話だけへ適用されることも実App Serverで確認する。
+`dev.bat ui` は送信キーの既定Ctrl+Enter・即時Enter切替・改行・IMEイベントの抑止、詳細／通信の独立設定と折りたたみ、大量ログ後の古いDOM回収・会話保持・記録継続、秘密値の伏せ字とHTML非実行、開始時設定の変更通知も確認する。単体試験では件数・UTF-8バイト上限の両方と、通常会話とは別の保持枠・差分の回収位置を確認する。IME試験は合成イベントであり、物理キーボードでの日本語変換操作とは区別する。`dev.bat approval` は開始指示とメモリ指定の変更が新しい会話だけへ適用されることも実App Serverで確認する。
 
 `dev.bat approval` はCodexの起動引数だけでon-request/user/read-onlyと確認用MCPを指定し、ユーザーのconfig.tomlは変更しない。診断用entryで元のApplet処理を包み、実行時の承認設定だけを証跡へ残す。確認用MCPは承認回答を返すだけで、AppDock設定・ファイル・外部状態を変更しない。ネイティブのmcpServer/tool/callで実MCP確認要求を発生させ、カードで許可した後にモデルへの送信を続ける。全モードの返答と、フルアクセスから継承へ戻した際のread-only復元を確認する。これはKAGUYA実機や実AppDock設定変更の確認とは区別する。
 

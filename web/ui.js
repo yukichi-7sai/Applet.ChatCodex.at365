@@ -87,10 +87,11 @@ function renderControls() {
 }
 function renderEntries(records) {
   for (const entry of records) entries.set(entry.id, entry);
-  for (const [id, entry] of entries) if (entry.order < state.minOrder) entries.delete(id);
+  for (const [id, entry] of entries) if (entry.order < (state.minOrders?.[entry.kind || 'message'] ?? state.minOrder)) entries.delete(id);
   const groups = new Map();
   for (const entry of [...entries.values()].sort((a, b) => a.order - b.order)) {
-    if (entry.kind && (state.displayMode === 'normal' || (entry.kind === 'trace' && state.displayMode !== 'trace'))) continue;
+    if (entry.kind === 'detail' && state.displayMode !== 'detail') continue;
+    if (entry.kind === 'trace' && !state.wireLogEnabled) continue;
     if (!groups.has(entry.messageId)) groups.set(entry.messageId, []);
     groups.get(entry.messageId).push(entry);
   }
@@ -111,6 +112,12 @@ function renderEntries(records) {
   }
   $('empty').hidden = groups.size > 0;
   $('omitted').hidden = !state.omitted;
+  const notes = [];
+  if (state.displayMode === 'detail' && state.diagnosticsOmitted?.detail) notes.push('古い詳細情報を整理して、最新の記録を続けています。');
+  if (state.wireLogEnabled && state.diagnosticsOmitted?.trace) notes.push('古い通信ログを整理して、最新の記録を続けています。');
+  const diagnosticNote = notes.join(' ');
+  if ($('diagnostic-note').textContent !== diagnosticNote) $('diagnostic-note').textContent = diagnosticNote;
+  $('diagnostic-note').hidden = !diagnosticNote;
 }
 async function perform(action) {
   if (performing) return;

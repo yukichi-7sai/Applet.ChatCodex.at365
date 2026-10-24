@@ -202,7 +202,7 @@ test('開始指示とメモリ注入は会話単位で指定し、変更は次�
   c.chat.send(c.chat.generation, 'without', '指示なしの確認'); await until(() => c.chat.state === 'idle');
   assert.equal(starts[0].developerInstructions, undefined);
   assert.deepEqual(starts[0].config, { 'memories.use_memories': false });
-  c.chat.setSettings({ displayMode: 'trace', sendOperationInstructions: true, memoryMode: 'include' });
+  c.chat.setSettings({ displayMode: 'detail', wireLogEnabled: true, sendOperationInstructions: true, memoryMode: 'include' });
   assert.equal(c.chat.read(c.chat.generation, 0).settingsPending, true);
   c.chat.send(c.chat.generation, 'same', '同じ会話'); await until(() => c.chat.state === 'idle');
   assert.equal(starts.length, 1);
@@ -227,13 +227,72 @@ test('通常は診断を記録せず、表示切替で開始時の自前情報�
   assert.ok(c.chat.entries.some(entry => entry.title === '確認への回答'));
 });
 
-test('通信ログは認証応答を隠し、量を制限して会話を継続できる', async t => {
-  const c = context({ settings: { displayMode: 'trace' } }); t.after(() => c.chat.close()); await ready(c);
+test('通信ログは通常／詳細から独立し、認証応答を隠してオン／オフできる', async t => {
+  const c = context({ settings: { wireLogEnabled: true } }); t.after(() => c.chat.close()); await ready(c);
   assert.ok(c.chat.entries.some(entry => entry.kind === 'trace' && entry.title.includes('initialize')));
   assert.ok(c.chat.entries.some(entry => entry.text.includes('認証・設定に関する通信本文')));
-  for (let n = 0; n < 500; n++) c.chat.diagnostic('trace', 'large', { text: 'x'.repeat(16000) });
-  assert.equal(c.chat.entries.filter(entry => entry.title === '詳細表示を省略').length, 1);
+  c.chat.send(c.chat.generation, 'wire-only', '通信のみ'); await until(() => c.chat.state === 'idle');
+  assert.equal(c.chat.entries.some(entry => entry.kind === 'detail'), false);
+  const traceCount = c.chat.entries.filter(entry => entry.kind === 'trace').length;
+  c.chat.setSettings({ displayMode: 'detail', wireLogEnabled: false });
+  c.chat.send(c.chat.generation, 'detail-only', '詳細のみ'); await until(() => c.chat.state === 'idle');
+  assert.equal(c.chat.entries.filter(entry => entry.kind === 'trace').length, traceCount);
+  assert.ok(c.chat.entries.some(entry => entry.kind === 'detail' && entry.title === '今回の送信設定'));
+  assert.equal(c.chat.read(c.chat.generation, 0).settingsPending, false);
+});
+
+test('件数上限で古いカードを種別ごとに回収し、他の詳細・会話・カーソルを保持する', async t => {
+  const c = context({ settings: { displayMode: 'detail', wireLogEnabled: true } }); t.after(() => c.chat.close()); await ready(c);
+  c.chat.send(c.chat.generation, 'before-limit', '保持する会話'); await until(() => c.chat.state === 'idle');
+  const thread = c.chat.threadId, generation = c.chat.generation;
+  c.chat.diagnostic('detail', '保持する詳細', 'before');
+  const before = c.chat.read(generation, 0);
+  for (let n = 0; n < 650; n++) c.chat.diagnostic('trace', 'trace-' + n, 'short');
+  const traces = c.chat.entries.filter(entry => entry.kind === 'trace');
+  assert.equal(traces.length, 400); assert.equal(traces[0].title, 'trace-250'); assert.equal(traces.at(-1).title, 'trace-649');
+  assert.ok(c.chat.entries.some(entry => entry.title === '保持する詳細'));
+  assert.deepEqual(c.chat.read(generation, 0).diagnosticsOmitted, { detail: false, trace: true });
+  for (let n = 0; n < 650; n++) c.chat.diagnostic('detail', 'detail-' + n, 'short');
+  assert.equal(c.chat.entries.filter(entry => entry.kind === 'detail').length, 400);
+  assert.ok(c.chat.entries.some(entry => entry.title === 'trace-649'));
+  const after = c.chat.read(generation, before.after);
+  assert.equal(after.reset, false); assert.equal(after.minOrders.message, before.minOrders.message);
+  assert.ok(after.minOrders.trace > before.minOrders.trace && after.minOrders.detail > before.minOrders.detail);
   c.chat.send(c.chat.generation, 'after-limit', '上限後'); await until(() => c.chat.state === 'idle');
   assert.ok(c.chat.entries.some(entry => entry.role === 'assistant' && entry.text.includes('上限後')));
+  assert.ok(c.chat.entries.some(entry => entry.role === 'user' && entry.text === '保持する会話'));
+  assert.equal(c.chat.threadId, thread); assert.equal(c.chat.generation, generation);
   assert.ok(Buffer.byteLength(JSON.stringify(c.chat.read(0, 0))) < 256 * 1024);
+  c.chat.newChat(generation);
+  assert.deepEqual(c.chat.read(c.chat.generation, 0).diagnosticsOmitted, { detail: false, trace: false });
+});
+
+test('UTF-8バイト上限でもカード全体を回収し、次の大量ログも記録し続ける', () => {
+  const c = context({ settings: { displayMode: 'detail', wireLogEnabled: true } });
+  for (const pass of [0, 1]) for (const kind of ['detail', 'trace']) {
+    for (let n = 0; n < 50; n++) c.chat.diagnostic(kind, kind + '-' + pass + '-' + n, { text: '日'.repeat(10000), end: 'tail-' + n });
+    const entries = c.chat.entries.filter(entry => entry.kind === kind);
+    assert.ok(entries.reduce((sum, entry) => sum + Buffer.byteLength(entry.text), 0) <= 512 * 1024);
+    assert.equal(entries.some(entry => entry.title === kind + '-' + pass + '-0'), false);
+    assert.ok(entries.some(entry => entry.title === kind + '-' + pass + '-49'));
+    const groups = Map.groupBy(entries, entry => entry.messageId);
+    for (const parts of groups.values()) assert.doesNotThrow(() => JSON.parse(parts.map(entry => entry.text).join('')));
+  }
+  assert.ok(Buffer.byteLength(JSON.stringify(c.chat.read(0, 0))) < 256 * 1024);
+  void c.chat.close();
+});
+
+test('通常の会話回収と診断の保持枠を分け、種別ごとの表示位置を返す', () => {
+  const c = context({ settings: { displayMode: 'detail', wireLogEnabled: true } });
+  c.chat.diagnostic('trace', '先頭の通信', 'keep'); c.chat.diagnostic('detail', '先頭の詳細', 'keep');
+  c.chat.entry('user', 'a'.repeat(5 * 1024 * 1024));
+  const before = c.chat.read(0, 0);
+  c.chat.entry('assistant', 'b'.repeat(5 * 1024 * 1024));
+  const after = c.chat.read(c.chat.generation, before.after);
+  assert.ok(after.minOrders.message > before.minOrders.message);
+  assert.equal(after.minOrders.trace, before.minOrders.trace); assert.equal(after.minOrders.detail, before.minOrders.detail);
+  assert.equal(c.chat.entries.filter(entry => entry.kind).length, 2);
+  assert.equal(after.omitted, true);
+  assert.ok(c.chat.entries.filter(entry => !entry.kind).reduce((sum, entry) => sum + Buffer.byteLength(entry.text), 0) <= 8 * 1024 * 1024);
+  void c.chat.close();
 });

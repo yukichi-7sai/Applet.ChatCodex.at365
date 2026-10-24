@@ -2,6 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {sanitize,wireView,format}=require('../src/diagnostics.cjs');
 const {normalizeSettings,threadConfig}=require('../src/chat-settings.cjs');
+const {createApplet}=require('../src/applet.cjs');
 test('構造化結果・JSON文字列・URL・認証ヘッダーの秘密値を伏せる',()=>{
  const value={apiKey:'key-secret',nested:{MY_ACCESS_TOKEN:'token-secret'},text:'Bearer secret-value sk-longsecretvalue https://user:password@example.test/?token=secretquery MY_TOKEN=env-secret',json:'{"clientSecret":"json-secret"}'};
  const text=format(value);
@@ -21,11 +22,33 @@ test('長文・深い構造を制限し、表示へHTMLを実行可能な値と�
  assert.equal(sanitize('<script>fixture</script>'),'<script>fixture</script>'); // UI uses textContent, never HTML.
 });
 test('表示設定の既定値とメモリの会話単位指定',()=>{
- assert.deepEqual(normalizeSettings(),{displayMode:'normal',sendKey:'ctrl-enter',sendOperationInstructions:true,memoryMode:'inherit'});
+ assert.deepEqual(normalizeSettings(),{displayMode:'normal',wireLogEnabled:false,sendKey:'ctrl-enter',sendOperationInstructions:true,memoryMode:'inherit'});
+ const legacy={displayMode:'trace'};
+ assert.equal(normalizeSettings(legacy).displayMode,'detail');
+ assert.equal(normalizeSettings(legacy).wireLogEnabled,false);
+ assert.deepEqual(legacy,{displayMode:'trace'});
+ assert.equal(normalizeSettings({wireLogEnabled:true}).wireLogEnabled,true);
+ assert.equal(normalizeSettings({wireLogEnabled:'true'}).wireLogEnabled,false);
  assert.equal(normalizeSettings({sendKey:'enter'}).sendKey,'enter');
  assert.equal(normalizeSettings({sendKey:'unknown'}).sendKey,'ctrl-enter');
  assert.deepEqual(threadConfig({memoryMode:'inherit'}),{});
  assert.deepEqual(threadConfig({memoryMode:'exclude'}),{config:{'memories.use_memories':false}});
  assert.deepEqual(threadConfig({memoryMode:'include'}),{config:{'memories.use_memories':true}});
  assert.equal(normalizeSettings({displayMode:'invalid'}).displayMode,'normal');
+});
+test('共通設定の新キーを優先し、継承時だけ旧値を読んで保存値を変更しない',async()=>{
+ const values={displayMode:'trace'};let changed,disposed=false;
+ const app=createApplet();
+ await app.activate({settings:{get:(key,fallback)=>values[key]??fallback,onChanged:handler=>{changed=handler;return()=>{disposed=true;};}},
+  storage:{},appdock:{},pages:{notifyChanged:()=>{}},commands:{register:()=>{}}});
+ const read=()=>app.onPageAction('chat.read',{generation:0,after:0},'main');
+ try{
+  assert.equal((await read()).displayMode,'detail');assert.equal((await read()).wireLogEnabled,false);
+  values.wireLogEnabled=true;changed();assert.equal((await read()).wireLogEnabled,true);
+  values.chatDisplayMode='normal';changed();assert.equal((await read()).displayMode,'normal');
+  values.chatDisplayMode='detail';changed();assert.equal((await read()).displayMode,'detail');
+  delete values.chatDisplayMode;changed();assert.equal((await read()).displayMode,'detail');
+  assert.deepEqual(values,{displayMode:'trace',wireLogEnabled:true});
+ }finally{await app.deactivate();}
+ assert.equal(disposed,true);
 });

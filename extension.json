@@ -3,7 +3,7 @@
   "id": "at365.chatcodex",
   "name": "Applet.ChatCodex.at365",
   "displayName": "ChatCodex",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "minimumHostVersion": "0.86.13",
   "runtime": "node",
   "entry": "src/applet.cjs",
@@ -16,9 +16,13 @@
       "options": [{"value":"ctrl-enter","label":"Ctrl+Enter（既定）"},{"value":"enter","label":"Enter"}]
     },
     {
-      "key": "displayMode", "title": "チャットの表示内容", "type": "select", "default": "normal",
-      "description": "表示をすぐに切り替えます。詳細は初期指示・ツール・確認、通信ログは送受信JSONも表示します。記録は実行中の会話内だけで、過去の通信は追加取得しません。",
-      "options": [{"value":"normal","label":"通常"},{"value":"detail","label":"詳細"},{"value":"trace","label":"通信ログ"}]
+      "key": "chatDisplayMode", "title": "チャットの表示内容", "type": "select", "default": "inherit",
+      "description": "既定は以前の選択を引き継ぎ、未設定なら通常です。通常／詳細を選んで切り替えられます。詳細は初期指示・ツール・確認を表示し、古い情報から整理して最新を残します。過去の通信は追加取得しません。",
+      "options": [{"value":"inherit","label":"既定（以前の選択／通常）"},{"value":"normal","label":"通常"},{"value":"detail","label":"詳細"}]
+    },
+    {
+      "key": "wireLogEnabled", "title": "通信ログを表示（開発者向け）", "type": "boolean", "default": false,
+      "description": "通常／詳細の選択と独立して送受信JSONを表示します。古い通信ログから整理して最新を残し、詳細情報の保持枠には影響しません。秘密値等は伏せ、ログファイルは作りません。"
     },
     {
       "key": "sendOperationInstructions", "title": "AppDockの操作指示を送る", "type": "boolean", "default": true,

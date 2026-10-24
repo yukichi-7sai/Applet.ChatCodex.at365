@@ -1,12 +1,15 @@
 'use strict';
 const { Chat } = require('./chat.cjs');
-const { defaults } = require('./chat-settings.cjs');
+const { defaults, settingDefaults, settingKeys } = require('./chat-settings.cjs');
 
 function createApplet(options = {}) {
   let chat, disposeSettings;
   return {
     async activate(context) {
-      const readSettings = () => Object.fromEntries(Object.entries(defaults).map(([key, value]) => [key, context.settings?.get(key, value) ?? value]));
+      const readSettings = () => Object.fromEntries(Object.entries(settingDefaults).map(([key, value]) => {
+        const selected = context.settings?.get(settingKeys[key] || key, value) ?? value;
+        return [key, key === 'displayMode' && selected === 'inherit' ? context.settings?.get(key, defaults.displayMode) ?? defaults.displayMode : selected];
+      }));
       chat = new Chat({
         storage: context.storage,
         getHostInfo: () => context.appdock.call('system.getInfo'),

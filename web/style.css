@@ -18,7 +18,7 @@ button:focus-visible, select:focus-visible, .question-input:focus-visible { outl
 .message[data-kind] .message-text { font: 12px/1.65 Consolas, "Yu Gothic UI", monospace; margin: 10px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .message[data-kind="trace"] { color: color-mix(in srgb, CanvasText 65%, Canvas); }
 #conversation { flex: 1; min-height: 80px; overflow: auto; padding: 4px 8px 16px 0; }
-#empty, #omitted { color: color-mix(in srgb, CanvasText 60%, Canvas); font-size: 13px; }
+#empty, #omitted, #diagnostic-note { color: color-mix(in srgb, CanvasText 60%, Canvas); font-size: 13px; overflow-wrap: anywhere; }
 .message { margin: 0 0 20px; }
 .message[data-role="user"] { margin-left: min(60px, 10%); padding: 12px 16px; border-radius: 14px; background: var(--accent-soft); }
 .message-title { font-size: 11px; font-weight: 600; margin: 0 0 6px; color: color-mix(in srgb, CanvasText 65%, Canvas); }
