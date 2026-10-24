@@ -1,0 +1,435 @@
+'use strict';
+const { randomUUID, createHash } = require('node:crypto');
+const { CodexProcess } = require('./codex-process.cjs');
+const busy = new Set(['connecting', 'running', 'awaitingInput', 'stopping']);
+const textLimit = 32768;
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const short = (value, max = 4000) => typeof value === 'string' ? value.slice(0, max) : '';
+
+function modelsFrom(data) {
+  if (!Array.isArray(data)) throw Error('Codexのモデル一覧形式に対応していません。');
+  return data.filter(item => object(item) && !item.hidden && typeof item.model === 'string' && item.model.length <= 200)
+    .map(item => ({
+      model: item.model, name: short(item.displayName, 200) || item.model,
+      isDefault: item.isDefault === true, defaultEffort: short(item.defaultReasoningEffort, 50),
+      efforts: Array.isArray(item.supportedReasoningEfforts)
+        ? [...new Set(item.supportedReasoningEfforts.map(e => e.reasoningEffort).filter(e => typeof e === 'string' && e.length <= 50))] : [],
+    }));
+}
+
+class Chat {
+  constructor({ clientFactory = () => new CodexProcess(), storage, getHostInfo, changed = () => {}, failed = () => {} } = {}) {
+    this.clientFactory = clientFactory;
+    this.storage = storage;
+    this.getHostInfo = getHostInfo;
+    this.changed = changed;
+    this.failed = failed;
+    this.generation = 1;
+    this.state = 'disconnected';
+    this.detail = '';
+    this.models = [];
+    this.selection = { model: '', effort: '' };
+    this.entries = [];
+    this.revision = 0;
+    this.order = 0;
+    this.requests = new Map();
+    this.accepted = new Map();
+    this.closed = false;
+    this.saving = false;
+  }
+  touch() {
+    if (this.closed || this.notifyTimer) return;
+    this.notifyTimer = setTimeout(() => {
+      this.notifyTimer = undefined;
+      if (!this.closed) Promise.resolve(this.changed()).catch(() => {});
+    }, 60);
+  }
+  entry(role, text, id = randomUUID()) {
+    const parts = [];
+    for (let offset = 0; offset < Math.max(1, text.length); offset += 4096) {
+      const entry = { id: id + ':' + offset, messageId: id, role, text: text.slice(offset, offset + 4096), order: ++this.order, revision: ++this.revision };
+      this.entries.push(entry); parts.push(entry);
+    }
+    this.trim();
+    this.touch();
+    return parts;
+  }
+  trim() {
+    let size = this.entries.reduce((sum, entry) => sum + Buffer.byteLength(entry.text), 0);
+    while (size > 8 * 1024 * 1024 && this.entries.length > 1) {
+      if (this.entries[0].active) break;
+      size -= Buffer.byteLength(this.entries.shift().text);
+      this.omitted = true;
+    }
+  }
+  append(itemId, delta) {
+    if (!delta) return;
+    let item = this.items?.get(itemId);
+    if (!item) {
+      item = { id: itemId, parts: this.entry('assistant', '', itemId) };
+      this.items.set(itemId, item);
+    }
+    while (delta.length) {
+      let part = item.parts.at(-1);
+      if (part.text.length >= 4096) {
+        part = this.entry('assistant', '', itemId + ':part:' + item.parts.length)[0];
+        part.id = itemId + ':' + item.parts.length * 4096;
+        part.messageId = itemId;
+        item.parts.push(part);
+      }
+      const length = Math.min(4096 - part.text.length, delta.length);
+      part.text += delta.slice(0, length);
+      delta = delta.slice(length);
+      part.revision = ++this.revision;
+      part.active = true;
+    }
+    if (item.parts.reduce((sum, part) => sum + part.text.length, 0) > 1024 * 1024) {
+      void this.stop(this.generation);
+      this.detail = '返答の表示上限に達したため停止しています。';
+    }
+    this.trim(); this.touch();
+  }
+  read(generation, after) {
+    if (!Number.isSafeInteger(generation) || !Number.isSafeInteger(after) || after < 0) throw Error('表示位置が不正です。');
+    const reset = generation !== this.generation || after > this.revision;
+    const candidates = this.entries.filter(entry => reset || entry.revision > after).sort((a, b) => a.revision - b.revision);
+    const result = {
+      generation: this.generation, reset, state: this.state, detail: this.detail,
+      models: this.models, selection: this.selection, saving: this.saving,
+      requests: [...this.requests.values()].map(request => request.view),
+      entries: [], after: reset ? 0 : after, more: false,
+      minOrder: this.entries[0]?.order || 0, omitted: !!this.omitted,
+    };
+    let bytes = Buffer.byteLength(JSON.stringify(result));
+    for (const entry of candidates) {
+      const addition = Buffer.byteLength(JSON.stringify(entry)) + 1;
+      if (bytes + addition > 240 * 1024) { result.more = true; break; }
+      result.entries.push(entry);
+      result.after = entry.revision;
+      bytes += addition;
+    }
+    return structuredClone(result);
+  }
+  assertGeneration(generation) {
+    if (this.closed || generation !== this.generation) throw Error('会話が切り替わりました。表示を更新してください。');
+  }
+  connect(generation) {
+    this.assertGeneration(generation);
+    if (busy.has(this.state) || this.state === 'idle') return { accepted: true };
+    const epoch = ++this.generation;
+    this.connectionEpoch = epoch;
+    this.entries = []; this.items = new Map(); this.requests.clear(); this.accepted.clear();
+    this.threadId = null; this.run = null; this.omitted = false; this.models = [];
+    this.state = 'connecting'; this.detail = 'Codexに接続しています。'; this.touch();
+    void this.connectAsync(epoch);
+    return { accepted: true };
+  }
+  async connectAsync(epoch) {
+    let client;
+    try {
+      await this.client?.close();
+      let saved;
+      try { saved = await this.storage.get('preferences'); } catch { this.preferenceWarning = '保存した選択を読み取れません。選び直して保存してください。'; }
+      if (saved != null && (!object(saved) || saved.schemaVersion !== 1 || typeof saved.model !== 'string' || typeof saved.effort !== 'string'))
+        this.preferenceWarning = '保存した選択の形式に対応していません。選び直して保存してください。';
+      else if (saved) this.selection = { model: saved.model, effort: saved.effort };
+      const info = await this.getHostInfo();
+      if (typeof info?.instanceId !== 'string') throw Error('起動元AppDockの情報を取得できません。Appletの情報取得許可を確認してください。');
+      this.hostInstanceId = info.instanceId;
+      if (this.closed || epoch !== this.generation) return;
+      client = this.clientFactory(); this.client = client;
+      client.on('notification', msg => {
+        if (epoch === this.connectionEpoch && !this.closed) {
+          try { this.notification(msg); } catch { this.disconnected('Codexの通知形式に対応していません。'); }
+        }
+      });
+      client.on('request', msg => {
+        if (epoch === this.connectionEpoch && !this.closed) {
+          try { this.serverRequest(msg); } catch { try { client.unsupported(msg.id); } catch {} }
+        }
+      });
+      client.on('closed', message => { if (epoch === this.connectionEpoch && !this.closed) this.disconnected(message); });
+      await client.start();
+      const account = await client.request('account/read', { refreshToken: false });
+      if (!account?.account && account?.requiresOpenaiAuth !== false) throw Error('Codexにログインしてください。通常のターミナルで codex を起動して認証を確認してください。');
+      const models = [];
+      let cursor = null;
+      const cursors = new Set();
+      do {
+        const result = await client.request('model/list', { cursor, limit: 100, includeHidden: false });
+        models.push(...modelsFrom(result?.data));
+        cursor = result?.nextCursor || null;
+        if (cursor && (cursors.has(cursor) || models.length > 1000)) throw Error('Codexのモデル一覧が上限を超えました。');
+        cursors.add(cursor);
+      } while (cursor);
+      if (!models.length) throw Error('利用できるCodexモデルがありません。');
+      if (Buffer.byteLength(JSON.stringify(models)) > 128 * 1024) throw Error('Codexのモデル一覧が表示上限を超えました。');
+      if (this.closed || epoch !== this.generation) { await client.close(); return; }
+      this.models = models;
+      if (!this.selection.model) {
+        const defaults = models.filter(model => model.isDefault);
+        if (defaults.length === 1) this.selection = { model: defaults[0].model, effort: this.defaultEffort(defaults[0]) };
+      }
+      this.state = 'idle';
+      this.detail = this.preferenceWarning || (this.validSelection() ? '' : '利用できるモデルと思考量を選んでください。');
+      this.touch();
+    } catch (error) {
+      await client?.close();
+      if (!this.closed && epoch === this.generation) {
+        const alreadyFailed = this.state === 'error';
+        this.state = 'error';
+        // Host and filesystem exceptions can contain local paths. Only our bounded messages are shown.
+        this.detail = error.message?.startsWith('Codex') || error.message?.startsWith('保存') || error.message?.startsWith('利用') || error.message?.startsWith('起動元')
+          ? short(error.message) : 'Codexへの接続に失敗しました。通常のターミナルでの起動とAppletの情報取得許可を確認してください。';
+        if (!alreadyFailed) Promise.resolve(this.failed('Codexへの接続に失敗しました。チャット画面で接続状態を確認してください。')).catch(() => {});
+        this.touch();
+      }
+    }
+  }
+  defaultEffort(model) { return model.efforts.includes(model.defaultEffort) ? model.defaultEffort : ''; }
+  validSelection() {
+    const model = this.models.find(model => model.model === this.selection.model);
+    return model && (!model.efforts.length || model.efforts.includes(this.selection.effort));
+  }
+  async select(generation, model, effort) {
+    this.assertGeneration(generation);
+    if (this.state !== 'idle' || this.saving) throw Error('待機中にモデルと思考量を選んでください。');
+    const definition = this.models.find(item => item.model === model);
+    if (!definition || (definition.efforts.length ? !definition.efforts.includes(effort) : effort !== ''))
+      throw Error('このモデルで利用できる思考量を選んでください。');
+    this.saving = true; this.touch();
+    try {
+      await this.storage.set('preferences', { schemaVersion: 1, model, effort });
+      this.assertGeneration(generation);
+      this.selection = { model, effort }; this.preferenceWarning = ''; this.detail = '';
+    } finally { this.saving = false; this.touch(); }
+    return { saved: true };
+  }
+  send(generation, requestId, text) {
+    this.assertGeneration(generation);
+    if (typeof requestId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(requestId) || typeof text !== 'string' || !text.trim() || Buffer.byteLength(text) > textLimit)
+      throw Error('空でない32KiB以下のメッセージを入力してください。');
+    const fingerprint = createHash('sha256').update(text).digest('hex');
+    const prior = this.accepted.get(requestId);
+    if (prior) { if (prior !== fingerprint) throw Error('同じ送信IDを別の文章には使えません。'); return { accepted: true }; }
+    if (this.state !== 'idle' || this.saving || !this.validSelection()) throw Error('接続とモデル・思考量の選択を確認してください。');
+    this.accepted.set(requestId, fingerprint);
+    if (this.accepted.size > 128) this.accepted.delete(this.accepted.keys().next().value);
+    this.entry('user', text);
+    this.state = 'running'; this.detail = '応答を生成しています。';
+    this.items = new Map();
+    const run = { generation, canceled: false, interrupted: false, selection: { ...this.selection } };
+    this.run = run; this.touch();
+    void this.generate(run, text);
+    return { accepted: true };
+  }
+  async generate(run, text) {
+    try {
+      if (!this.threadId) {
+        const result = await this.client.request('thread/start', {
+          model: run.selection.model, cwd: process.cwd(), serviceName: 'appdock_chatcodex',
+          developerInstructions: 'AppDockの操作を支援するチャットです。設定の操作には既存のAppDock MCPだけを使い、settings.jsonを直接編集しないでください。対象instanceIdは ' +
+            this.hostInstanceId + ' です。MCPの情報取得で一致を確認してから操作してください。一致する接続がなければ操作せず説明してください。設定・コマンドのスキーマと現在のrevisionを取得し、必要なdryRun、保存、結果確認を行ってください。失敗・結果不明の操作を自動再送しないでください。',
+        });
+        if (this.run !== run) return;
+        if (!result?.thread?.id) throw Error('Codexの会話開始応答に対応していません。');
+        this.threadId = result.thread.id;
+      }
+      if (run.canceled) { this.finish('interrupted'); return; }
+      const params = { threadId: this.threadId, input: [{ type: 'text', text }], model: run.selection.model };
+      if (run.selection.effort) params.effort = run.selection.effort;
+      const result = await this.client.request('turn/start', params);
+      if (this.run !== run) return;
+      if (!result?.turn?.id) throw Error('Codexの送信応答に対応していません。');
+      run.turnId = result.turn.id;
+      if (run.canceled) this.interrupt(run);
+    } catch {
+      if (this.run === run) this.disconnected('Codexへの送信結果を確認できません。操作済みの可能性があるため、自動再送していません。');
+    }
+  }
+  notification({ method, params: p = {} }) {
+    if (p.threadId && p.threadId !== this.threadId) return;
+    if (method === 'serverRequest/resolved') {
+      for (const [id, request] of this.requests) if (request.wireId === p.requestId) this.requests.delete(id);
+      if (this.run && this.state !== 'stopping') this.state = this.requests.size ? 'awaitingInput' : 'running';
+      this.touch(); return;
+    }
+    if (!this.run) return;
+    const eventTurnId = p.turnId || p.turn?.id;
+    if (eventTurnId && this.run.turnId && eventTurnId !== this.run.turnId) return;
+    if (method === 'turn/started') {
+      if (p.turn?.id) this.run.turnId = p.turn.id;
+      if (this.run.canceled) this.interrupt(this.run);
+    } else if (method === 'item/agentMessage/delta') {
+      if (typeof p.itemId === 'string' && typeof p.delta === 'string') this.append(p.itemId, p.delta);
+    } else if (method === 'item/completed' && p.item?.type === 'agentMessage') {
+      const id = p.item.id;
+      const text = short(p.item.text, 1024 * 1024);
+      let item = this.items.get(id);
+      if (!item) { item = { id, parts: this.entry('assistant', '', id) }; this.items.set(id, item); }
+      const count = Math.max(1, Math.ceil(text.length / 4096));
+      while (item.parts.length < count) {
+        const part = this.entry('assistant', '', id + ':part:' + item.parts.length)[0];
+        part.id = id + ':' + item.parts.length * 4096; part.messageId = id; item.parts.push(part);
+      }
+      item.parts.forEach((part, index) => { part.text = text.slice(index * 4096, (index + 1) * 4096); part.revision = ++this.revision; delete part.active; });
+      this.touch();
+    } else if (method === 'item/started' && p.item?.type === 'mcpToolCall') {
+      this.detail = 'MCPの操作を実行しています。'; this.touch();
+    } else if (method === 'turn/completed') this.finish(p.turn?.status || 'completed');
+    else if (method === 'error') { this.detail = 'Codexでエラーが発生しました。'; this.touch(); }
+  }
+  finish(status) {
+    clearTimeout(this.stopTimer);
+    for (const entry of this.entries) delete entry.active;
+    this.run = null; this.requests.clear(); this.state = 'idle';
+    this.detail = status === 'interrupted' ? '停止しました。送信済みの操作は取り消されない場合があります。'
+      : status === 'failed' ? 'Codexの処理に失敗しました。結果を確認してください。' : '';
+    if (status === 'failed') Promise.resolve(this.failed(this.detail)).catch(() => {});
+    this.trim(); this.touch();
+  }
+  cancelRequests() {
+    for (const request of this.requests.values()) {
+      try { this.client.respond(request.wireId, request.cancel); } catch {}
+    }
+    this.requests.clear();
+  }
+  stop(generation) {
+    this.assertGeneration(generation);
+    if (!this.run) return { accepted: true };
+    this.run.canceled = true; this.state = 'stopping'; this.detail = '停止しています。';
+    this.cancelRequests(); this.interrupt(this.run); this.touch();
+    return { accepted: true };
+  }
+  interrupt(run) {
+    if (!run.turnId || run.interrupted) return;
+    run.interrupted = true;
+    void this.client.request('turn/interrupt', { threadId: this.threadId, turnId: run.turnId }, 10000)
+      .catch(() => { if (this.run === run) this.disconnected('停止の結果を確認できません。接続し直す前に操作結果を確認してください。'); });
+    this.stopTimer = setTimeout(() => {
+      if (this.run === run) this.disconnected('停止完了を確認できません。操作結果を確認してください。');
+    }, 15000);
+    this.stopTimer.unref?.();
+  }
+  newChat(generation) {
+    this.assertGeneration(generation);
+    if (this.state !== 'idle' || this.saving) throw Error('待機中に新しいチャットを開始してください。');
+    this.generation++; this.entries = []; this.items = new Map(); this.accepted.clear(); this.requests.clear();
+    this.threadId = null; this.detail = ''; this.omitted = false; this.touch();
+    return { accepted: true };
+  }
+  disconnected(message) {
+    const alreadyFailed = this.state === 'error';
+    this.cancelRequests();
+    this.run = null;
+    for (const entry of this.entries) delete entry.active;
+    this.state = 'error'; this.detail = message; this.touch();
+    if (!alreadyFailed) Promise.resolve(this.failed('Codexとの通信が終了しました。チャット画面で処理結果を確認してください。')).catch(() => {});
+    void this.client?.close();
+  }
+  serverRequest(msg) {
+    const p = msg.params || {};
+    if (!this.run || (p.threadId && p.threadId !== this.threadId) || this.requests.size >= 4 || Buffer.byteLength(JSON.stringify(p)) > 16384) {
+      this.client.unsupported(msg.id); return;
+    }
+    const id = randomUUID();
+    let view, cancel, accept;
+    if (['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(msg.method)) {
+      const available = Array.isArray(p.availableDecisions) ? p.availableDecisions : ['accept', 'decline', 'cancel'];
+      const choices = ['accept', 'decline', 'cancel'].filter(value => available.includes(value));
+      if (!choices.length) { this.client.unsupported(msg.id); return; }
+      view = { id, kind: 'approval', title: 'Codexからの実行確認', detail: short(p.reason || p.command || 'この操作を許可しますか？'), choices };
+      cancel = { decision: choices.includes('cancel') ? 'cancel' : 'decline' };
+      accept = answer => { if (!choices.includes(answer.decision)) throw Error('確認の選択肢が不正です。'); return { decision: answer.decision }; };
+    } else if (msg.method === 'item/permissions/requestApproval') {
+      view = { id, kind: 'approval', title: 'Codexからの権限確認', detail: short(p.reason || JSON.stringify(p.permissions)), choices: ['accept', 'decline'] };
+      cancel = { permissions: {}, scope: 'turn' };
+      accept = answer => { if (!['accept', 'decline'].includes(answer.decision)) throw Error('確認の選択肢が不正です。'); return answer.decision === 'accept' ? { permissions: p.permissions || {}, scope: 'turn' } : cancel; };
+    } else if (msg.method === 'item/tool/requestUserInput' && Array.isArray(p.questions) && p.questions.length <= 3) {
+      const questions = p.questions.map(q => ({
+        id: short(q.id, 100), title: short(q.question, 3000),
+        options: Array.isArray(q.options) ? q.options.slice(0, 20).map(option => ({ label: short(option.label, 200), description: short(option.description, 500) })) : [],
+        other: q.isOther === true,
+      }));
+      if (questions.some(q => !q.id || !q.title)) { this.client.unsupported(msg.id); return; }
+      view = { id, kind: 'questions', title: 'Codexからの質問', questions };
+      cancel = { answers: {} };
+      accept = answer => {
+        if (!object(answer.answers)) throw Error('質問への回答が不正です。');
+        const answers = Object.create(null);
+        for (const q of questions) {
+          const value = answer.answers[q.id];
+          if (typeof value !== 'string' || !value.trim() || value.length > 4000 ||
+            (q.options.length && !q.other && !q.options.some(option => option.label === value))) throw Error('質問への回答を確認してください。');
+          answers[q.id] = { answers: [value] };
+        }
+        return { answers };
+      };
+    } else if (msg.method === 'mcpServer/elicitation/request' && ['form', 'openai/form'].includes(p.mode)) {
+      const schema = p.requestedSchema;
+      const fields = object(schema?.properties) ? Object.entries(schema.properties) : [];
+      if (!fields.length || fields.length > 12 || fields.some(([, field]) => !['string', 'number', 'integer', 'boolean'].includes(field.type) || field.items || field.format === 'password')) {
+        this.client.respond(msg.id, { action: 'cancel', content: null }); return;
+      }
+      const questions = fields.map(([key, field]) => ({
+        id: key, title: short(field.title || field.description || key, 1000),
+        options: Array.isArray(field.enum) ? field.enum.map(value => ({ label: String(value) })) : field.type === 'boolean' ? [{ label: 'true' }, { label: 'false' }] : [],
+        other: !field.enum && field.type !== 'boolean',
+      }));
+      view = { id, kind: 'questions', title: short(p.message) || 'MCPからの確認', questions };
+      cancel = { action: 'cancel', content: null };
+      accept = answer => {
+        if (answer.decision === 'cancel') return cancel;
+        if (!object(answer.answers)) throw Error('回答の形式が不正です。');
+        const content = Object.create(null);
+        for (const [key, field] of fields) {
+          const value = answer.answers[key];
+          if (typeof value !== 'string' || value.length > 4000) throw Error('回答を確認してください。');
+          if (!value && !(schema.required || []).includes(key)) continue;
+          const parsed = field.type === 'boolean' ? (value === 'true' ? true : value === 'false' ? false : null)
+            : ['number', 'integer'].includes(field.type) ? (value.trim() ? Number(value) : NaN) : value;
+          if (parsed === null || (typeof parsed === 'number' && (!Number.isFinite(parsed) || (field.type === 'integer' && !Number.isInteger(parsed)) ||
+            (field.minimum !== undefined && parsed < field.minimum) || (field.maximum !== undefined && parsed > field.maximum))) ||
+            (typeof parsed === 'string' && ((field.minLength && parsed.length < field.minLength) || (field.maxLength && parsed.length > field.maxLength))) ||
+            (field.enum && !field.enum.includes(parsed))) throw Error('回答の値を確認してください。');
+          content[key] = parsed;
+        }
+        return { action: 'accept', content };
+      };
+    } else if (msg.method === 'mcpServer/elicitation/request') {
+      this.client.respond(msg.id, { action: 'cancel', content: null });
+      this.detail = 'この形式のMCP確認には対応していません。'; this.touch(); return;
+    } else {
+      this.client.unsupported(msg.id);
+      this.detail = 'このCodex確認形式には対応していません。処理を継続できない場合は停止してください。'; this.touch(); return;
+    }
+    if (Buffer.byteLength(JSON.stringify(view)) > 16384) { this.client.respond(msg.id, cancel); return; }
+    this.requests.set(id, { wireId: msg.id, view, cancel, accept });
+    this.state = 'awaitingInput'; this.detail = ''; this.touch();
+  }
+  respond(generation, id, response) {
+    this.assertGeneration(generation);
+    const request = this.requests.get(id);
+    if (!request || !this.run || this.state === 'stopping') throw Error('この確認は終了しています。');
+    if (typeof response !== 'string' || Buffer.byteLength(response) > 16384) throw Error('回答が大きすぎます。');
+    let answer;
+    try { answer = JSON.parse(response); } catch { throw Error('回答の形式が不正です。'); }
+    if (!object(answer)) throw Error('回答の形式が不正です。');
+    const result = answer.decision === 'cancel' && request.view.kind === 'questions' ? request.cancel : request.accept(answer);
+    this.client.respond(request.wireId, result);
+    this.requests.delete(id);
+    this.state = this.requests.size ? 'awaitingInput' : 'running'; this.touch();
+    return { accepted: true };
+  }
+  async close() {
+    this.closed = true;
+    clearTimeout(this.notifyTimer); clearTimeout(this.stopTimer);
+    this.cancelRequests();
+    if (this.run?.turnId) {
+      try { this.client.send({ id: 'shutdown', method: 'turn/interrupt', params: { threadId: this.threadId, turnId: this.run.turnId } }); } catch {}
+    }
+    await this.client?.close();
+    this.entries = []; this.run = null;
+  }
+}
+module.exports = { Chat, modelsFrom };

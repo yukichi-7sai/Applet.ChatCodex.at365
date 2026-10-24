@@ -3,8 +3,9 @@
 - [初期機能の設計](docs/design.md)
 - [利用仕様案と前提条件](docs/usage.md)
 - [調査・検証記録](VERIFICATION.md)
+- [本体側の不足と境界](docs/host-gaps.md)
 
-現在は設計段階。実装、依存関係の導入、発行は行っていない。
+初期実装はチャットとモデル・思考量の選択に限定する。設計の初回コミットと実装・検証の記録はVERIFICATIONへ分けて記載する。
 
 ## 共通技術資料
 
@@ -12,16 +13,22 @@
 
 ## 開発環境
 
-実装はNode AppletとローカルHTML/TypeScript UIを予定する。実行時はAppDock同梱Nodeを使用し、Codex実行プログラムは同じPCに用意する。
+Node Applet（CommonJS JavaScript）とローカルHTML/JavaScript UI。実行時はAppDock同梱Nodeを使用し、Codex実行プログラムは同じPCに用意する。
 
-Node・pnpm・ビルド依存の固定版とセットアップ手順は、実装時に共通の依存方針へ合わせて決める。グローバルツールの導入や既存Codexの更新を、この設計作業には含めない。
+ビルド・単体試験は隣のAppDockのtoolchain.jsonが固定するNodeをdev.bat経由で使う。外部の実行時依存、TypeScriptコンパイラー、トランスパイル工程は追加していない。GUI試験だけは本体の固定Playwrightと既存の起動補助を読み取り利用し、本体のビルド・依存導入・変更はしない。
 
 ## ビルド・テスト・発行
 
-現時点では実行可能なソース、manifest、ビルド・発行スクリプトはない。
+| コマンド | 内容 |
+| --- | --- |
+| `dev.bat test` | Node標準テスト、疑似App Serverとの実stdio |
+| `dev.bat build` | 構文検査、out/Applet.ChatCodex.at365への組立 |
+| `dev.bat ui` | 固定AppDock EXE＋隔離設定＋疑似CodexのGUI試験 |
+| `dev.bat probe` | 実Codexの会話と既存MCP情報取得。設定変更は行わない |
+| `publish.bat` | 本Appletだけ発行し、個別update.zip/update.jsonを生成 |
 
-実装開始時に設計書の受け入れ条件に対応する試験とビルド手順を用意する。発行先は共通手順に従う `A:/40.ARTIFACT/Applet.ChatCodex.at365` とし、今回の文書作成では発行しない。
+発行には本体の既存AppDock.Updater.exeを使う。通常の共通梱包スクリプトは本体側を再ビルドするため、本体変更禁止のこの作業では既存の同じpackerを直接呼び出す。既存packerがない場合は失敗させ、黙って本体を生成しない。
 
-## リポジトリの状態
+実Codex GUI試験は固定Nodeで `scripts/real-ui-test.cjs`、親プロセス異常終了の確認は `scripts/lifecycle-probe.cjs` を実行する。実Codex試験はサインイン済み環境とモデル利用を伴うので、通常の単体試験には含めない。本文・認証を検証ログへ記録しない。
 
-独立したローカルGitリポジトリ。初期ブランチは `main`。リモートと追跡先は未設定で、初回コミットも作成していない。
+発行先は `A:/40.ARTIFACT/Applet.ChatCodex.at365`。deploy.batは配置先AppDockフォルダーを引数に取り、発行済みのAppletだけをコピーする。配布・実利用先への配置・外部公開はそれぞれ依頼範囲に従う。

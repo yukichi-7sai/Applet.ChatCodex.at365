@@ -2,8 +2,8 @@
 
 ## インストール方法
 
-設計段階のため、インストールできる配布物はまだありません。
+Codex CLIを別途インストールします。発行物の `Applet.ChatCodex.at365` フォルダーをAppDockの `extensions` フォルダーへ置き、Appletを有効にします。[利用条件と操作](docs/usage.md)を確認してください。
 
 ## ビルド方法
 
-実装前のため、ビルド・発行コマンドはまだありません。[開発文書](DEVELOPMENT.md)を参照してください。
+AppDockリポジトリを隣に置き、固定Nodeを準備して `dev.bat build` を実行します。`publish.bat` で `A:/40.ARTIFACT/Applet.ChatCodex.at365` へ発行します。詳しくは[開発文書](DEVELOPMENT.md)を参照してください。

@@ -1,0 +1,52 @@
+'use strict';
+const readline = require('node:readline');
+let thread = 0, turn = 0, current, timer, waiting;
+const send = message => process.stdout.write(JSON.stringify(message) + '\n');
+const notify = (method, params) => send({ method, params });
+function finish(text) {
+  if (!current) return;
+  const p = { threadId: current.thread, turnId: current.turn, itemId: current.item };
+  notify('item/agentMessage/delta', { ...p, delta: text.slice(0, Math.floor(text.length / 2)) });
+  notify('item/agentMessage/delta', { ...p, delta: text.slice(Math.floor(text.length / 2)) });
+  notify('item/completed', { ...p, item: { id: p.itemId, type: 'agentMessage', text } });
+  notify('turn/completed', { threadId: current.thread, turn: { id: current.turn, status: 'completed' } });
+  current = null;
+}
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  const msg = JSON.parse(line);
+  if (!msg.method) {
+    if (waiting === msg.id) { waiting = null; finish('確認への返答を受け取りました。'); }
+    return;
+  }
+  let result;
+  if (msg.method === 'initialize') result = { userAgent: 'fixture' };
+  else if (msg.method === 'initialized') return;
+  else if (msg.method === 'account/read') result = { account: { type: 'chatgpt' }, requiresOpenaiAuth: true };
+  else if (msg.method === 'model/list') result = msg.params.cursor
+    ? { data: [{ model: 'fixture-simple', id: 'simple-id', displayName: 'Fixture Simple', defaultReasoningEffort: '', supportedReasoningEfforts: [] }], nextCursor: null }
+    : { data: [{ model: 'fixture-fast', id: 'fast-id', displayName: 'Fixture Fast', isDefault: true, defaultReasoningEffort: 'low',
+      supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }], nextCursor: 'second' };
+  else if (msg.method === 'thread/start') result = { thread: { id: 'thread-' + ++thread } };
+  else if (msg.method === 'turn/start') {
+    const text = msg.params.input[0].text;
+    current = { thread: msg.params.threadId, turn: 'turn-' + ++turn, item: 'item-' + turn };
+    send({ id: msg.id, result: { turn: { id: current.turn, status: 'inProgress' } } });
+    notify('turn/started', { threadId: current.thread, turn: { id: current.turn, status: 'inProgress' } });
+    if (text.includes('承認')) {
+      waiting = 900 + turn;
+      send({ id: waiting, method: 'item/commandExecution/requestApproval', params: { threadId: current.thread, turnId: current.turn, reason: 'Fixtureの確認です。', availableDecisions: ['accept', 'decline', 'cancel'] } });
+    } else if (text.includes('質問')) {
+      waiting = 900 + turn;
+      send({ id: waiting, method: 'item/tool/requestUserInput', params: { threadId: current.thread, turnId: current.turn,
+        questions: [{ id: 'choice', question: '表示する内容を選んでください。', options: [{ label: '短く' }, { label: '詳しく' }] }] } });
+    } else if (text.includes('遅延')) timer = setTimeout(() => finish('遅延の応答'), 30000);
+    else timer = setTimeout(() => finish(text.includes('長文') ? '文'.repeat(10000) : '応答: ' + text + ' [' + msg.params.model + '/' + (msg.params.effort || '指定なし') + ']'), 30);
+    return;
+  } else if (msg.method === 'turn/interrupt') {
+    clearTimeout(timer);
+    if (current) notify('turn/completed', { threadId: current.thread, turn: { id: current.turn, status: 'interrupted' } });
+    current = null; result = {};
+  } else return send({ id: msg.id, error: { code: -32601, message: 'Unknown method' } });
+  send({ id: msg.id, result });
+});
+process.stdin.on('end', () => { clearTimeout(timer); process.exit(0); });
