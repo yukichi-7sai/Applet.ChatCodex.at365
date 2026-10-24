@@ -1,0 +1,6 @@
+/.artifacts/
+/.tools/
+/node_modules/
+/out/
+/dist/
+*.tsbuildinfo
