@@ -1,10 +1,18 @@
 'use strict';
 const readline = require('node:readline');
+const fs = require('node:fs');
+const stateFile = process.env.CHATCODEX_FIXTURE_STATE;
+let saved = { thread: 0, turn: 0, threads: {} };
+if (stateFile && fs.existsSync(stateFile)) saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+const persist = () => { saved.thread = thread; saved.turn = turn; if (stateFile) fs.writeFileSync(stateFile, JSON.stringify(saved)); };
 let thread = 0, turn = 0, current, timer, waiting;
+thread = saved.thread; turn = saved.turn;
 const send = message => process.stdout.write(JSON.stringify(message) + '\n');
 const notify = (method, params) => send({ method, params });
 function finish(text) {
   if (!current) return;
+  const record = saved.threads[current.thread]?.turns.at(-1);
+  if (record) { record.items.push({ type: 'agentMessage', text }); record.status = 'completed'; persist(); }
   const p = { threadId: current.thread, turnId: current.turn, itemId: current.item };
   notify('item/agentMessage/delta', { ...p, delta: text.slice(0, Math.floor(text.length / 2)) });
   notify('item/agentMessage/delta', { ...p, delta: text.slice(Math.floor(text.length / 2)) });
@@ -26,13 +34,25 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     ? { data: [{ model: 'fixture-simple', id: 'simple-id', displayName: 'Fixture Simple', defaultReasoningEffort: '', supportedReasoningEfforts: [] }], nextCursor: null }
     : { data: [{ model: 'fixture-fast', id: 'fast-id', displayName: 'Fixture Fast', isDefault: true, defaultReasoningEffort: 'low',
       supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }], nextCursor: 'second' };
-  else if (msg.method === 'thread/start') result = { thread: { id: 'thread-' + ++thread }, approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: { type: 'readOnly', networkAccess: false } };
+  else if (msg.method === 'thread/start') {
+    const id = 'thread-' + ++thread;
+    saved.threads[id] = { id, cwd: msg.params.cwd, turns: [], ephemeral: msg.params.ephemeral === true, status: { type: 'idle' } }; persist();
+    result = { thread: saved.threads[id], cwd: msg.params.cwd, approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: { type: 'readOnly', networkAccess: false } };
+  } else if (msg.method === 'thread/resume') {
+    const record = saved.threads[msg.params.threadId];
+    if (!record) return send({ id: msg.id, error: { code: -32600, message: 'missing fixture thread' } });
+    result = { thread: { ...record, turns: [] }, cwd: record.cwd, approvalPolicy: 'never', approvalsReviewer: 'user', sandbox: { type: 'dangerFullAccess' } };
+  } else if (msg.method === 'thread/turns/list') {
+    const turns = saved.threads[msg.params.threadId]?.turns || [], offset = Number(msg.params.cursor || 0);
+    result = { data: [...turns].reverse().slice(offset, offset + msg.params.limit), nextCursor: offset + msg.params.limit < turns.length ? String(offset + msg.params.limit) : null };
+  }
   else if (msg.method === 'turn/start') {
     const text = msg.params.input[0].text;
     if (text.includes('制限拒否') && msg.params.approvalPolicy === 'never') {
       send({ id: msg.id, error: { code: -32602, message: 'Fixture policy does not allow this mode.' } }); return;
     }
     current = { thread: msg.params.threadId, turn: 'turn-' + ++turn, item: 'item-' + turn };
+    saved.threads[current.thread]?.turns.push({ id: current.turn, status: 'inProgress', items: [{ type: 'userMessage', content: [{ type: 'text', text }] }] }); persist();
     send({ id: msg.id, result: { turn: { id: current.turn, status: 'inProgress' } } });
     notify('turn/started', { threadId: current.thread, turn: { id: current.turn, status: 'inProgress' } });
     if (text.includes('ログ大量')) {
@@ -65,6 +85,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     return;
   } else if (msg.method === 'turn/interrupt') {
     clearTimeout(timer);
+    const record = saved.threads[current?.thread]?.turns.at(-1);
+    if (record) { record.status = 'interrupted'; persist(); }
     if (current) notify('turn/completed', { threadId: current.thread, turn: { id: current.turn, status: 'interrupted' } });
     current = null; result = {};
   } else return send({ id: msg.id, error: { code: -32601, message: 'Unknown method' } });

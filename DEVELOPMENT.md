@@ -6,7 +6,7 @@
 - [調査・検証記録](VERIFICATION.md)
 - [本体側の不足と境界](docs/host-gaps.md)
 
-実装はチャットとモデル・思考量・4つの承認モード、送信キー・表示・開始時の指示とメモリ利用の設定に限定する。設計の初回コミットと実装・検証の記録はVERIFICATIONへ分けて記載する。
+実装はチャットと最後の会話の復元、モデル・思考量・4つの承認モード、送信キー・表示・開始時の指示とメモリ利用の設定に限定する。設計の初回コミットと実装・検証の記録はVERIFICATIONへ分けて記載する。
 
 ## 共通技術資料
 
@@ -34,6 +34,8 @@ Node Applet（CommonJS JavaScript）とローカルHTML/JavaScript UI。実行�
 実Codex GUI試験は固定Nodeで `scripts/real-ui-test.cjs`、親プロセス異常終了の確認は `scripts/lifecycle-probe.cjs` を実行する。実Codex試験はサインイン済み環境とモデル利用を伴うので、通常の単体試験には含めない。本文・認証を検証ログへ記録しない。
 
 実Codexで会話を開始する試験はthread/startへ `ephemeral: true` を指定し、応答のthread.ephemeralと保存パス未設定を確認する。GUI試験は隔離コピーのentryだけで指定を追加し、通常版の起動時送信や会話保存設定を変更しない。`dev.bat approval` は終了後に別App Serverから試験用cwdの保存履歴を照会し、0件であることも確認する。過去の試験で残った履歴は自動削除しない。
+
+再開の永続化試験は例外として、固定Nodeで `scripts/resume-probe.cjs` を実行する。認証のない隔離CODEX_HOME、file認証ストア、loopbackのResponses模擬サーバーを使い、実Codexの保存・終了・再開・次の入力に以前の文脈が含まれることを確認する。通常の認証や履歴・外部モデルは使わない。再開参照の保存失敗・消失・未知形式・別保存先・承認待ち中断・元の継承権限は単体試験で確認する。`dev.bat ui` は固定EXEを終了・再起動し、実Storageから会話を復元して次の入力を送るところまで確認する。
 
 固定Nodeで `scripts/startup-probe.cjs` を実行すると、実App Serverのthread/startでメモリ指定の継承／true／falseと不正値拒否を確認する。モデルへの送信は行わず、Codex設定ファイルの前後hash一致を記録する。自動注入されたメモリ本文は収集しない。メモリ機能そのものはCodex設定に従う。
 

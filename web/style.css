@@ -12,7 +12,7 @@ button:disabled, select:disabled { opacity: .5; cursor: default; }
 button:focus-visible, select:focus-visible, .question-input:focus-visible { outline: 2px solid var(--accent-focus); outline-offset: 2px; }
 .connection { min-height: 30px; display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 12px; color: color-mix(in srgb, CanvasText 65%, Canvas); }
 #notice { border-left: 3px solid #b46b18; padding: 8px 12px; white-space: pre-wrap; }
-#settings-note { font-size: 12px; color: color-mix(in srgb, CanvasText 65%, Canvas); margin: 0; }
+#settings-note, #session-note { font-size: 12px; color: color-mix(in srgb, CanvasText 65%, Canvas); margin: 0; }
 .message[data-kind] { border: 1px solid color-mix(in srgb, CanvasText 14%, Canvas); border-radius: 10px; padding: 9px 12px; margin-bottom: 10px; }
 .message[data-kind] summary { margin: 0; cursor: pointer; overflow-wrap: anywhere; }
 .message[data-kind] .message-text { font: 12px/1.65 Consolas, "Yu Gothic UI", monospace; margin: 10px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }

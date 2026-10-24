@@ -39,7 +39,7 @@ test('実stdio: 継続・モデル思考量・最終itemの重複防止・新し
   c.chat.send(c.chat.generation, 'second', '続き'); await until(() => c.chat.state === 'idle');
   assert.equal(c.chat.threadId, thread);
   const old = c.chat.generation;
-  c.chat.newChat(old);
+  await c.chat.newChat(old);
   assert.throws(() => c.chat.send(old, 'stale', '古い画面'));
   c.chat.send(c.chat.generation, 'third', '新しい会話'); await until(() => c.chat.state === 'idle');
   assert.notEqual(c.chat.threadId, thread);
@@ -82,7 +82,7 @@ test('実stdio: 長文分割とカーソルの再取得', async t => {
 });
 test('保存失敗時に選択を変えず、不正な保存値を自動修復しない', async t => {
   let saved = false;
-  const c = context({ storage: { get: async () => ({ schemaVersion: 9 }), set: async () => { saved = true; throw Error('write'); } } });
+  const c = context({ storage: { get: async key => key === 'preferences' ? { schemaVersion: 9 } : null, set: async () => { saved = true; throw Error('write'); } } });
   t.after(() => c.chat.close()); await ready(c);
   const original = { ...c.chat.selection };
   assert.equal(saved, false); assert.match(c.chat.detail, /保存/);
@@ -90,7 +90,7 @@ test('保存失敗時に選択を変えず、不正な保存値を自動修復�
   assert.deepEqual(c.chat.selection, original);
 });
 test('未提供モデルを別モデルへ自動変更しない', async t => {
-  const c = context({ storage: { get: async () => ({ schemaVersion: 1, model: 'missing', effort: 'high' }), set: async () => {} } });
+  const c = context({ storage: { get: async key => key === 'preferences' ? { schemaVersion: 1, model: 'missing', effort: 'high' } : null, set: async () => {} } });
   t.after(() => c.chat.close()); await ready(c);
   assert.equal(c.chat.selection.model, 'missing');
   assert.throws(() => c.chat.send(c.chat.generation, 'a', 'text'));
@@ -150,7 +150,7 @@ test('旧保存値は継承で読み、未知の承認モードは選び直す�
   for (const approvalMode of [undefined, 'unknown']) {
     const saved = { schemaVersion: 1, model: 'fixture-fast', effort: 'low', ...(approvalMode ? { approvalMode } : {}) };
     let writes = 0;
-    const c = context({ storage: { get: async () => saved, set: async () => writes++ } });
+    const c = context({ storage: { get: async key => key === 'preferences' ? saved : null, set: async () => writes++ } });
     t.after(() => c.chat.close()); await ready(c);
     assert.equal(writes, 0);
     assert.equal(c.chat.approvalMode, approvalMode ? '' : 'inherit');
@@ -206,7 +206,7 @@ test('開始指示とメモリ注入は会話単位で指定し、変更は次�
   assert.equal(c.chat.read(c.chat.generation, 0).settingsPending, true);
   c.chat.send(c.chat.generation, 'same', '同じ会話'); await until(() => c.chat.state === 'idle');
   assert.equal(starts.length, 1);
-  c.chat.newChat(c.chat.generation);
+  await c.chat.newChat(c.chat.generation);
   c.chat.send(c.chat.generation, 'with', '新しい会話'); await until(() => c.chat.state === 'idle');
   assert.match(starts[1].developerInstructions, /fixture-host/);
   assert.deepEqual(starts[1].config, { 'memories.use_memories': true });
@@ -263,7 +263,7 @@ test('件数上限で古いカードを種別ごとに回収し、他の詳細�
   assert.ok(c.chat.entries.some(entry => entry.role === 'user' && entry.text === '保持する会話'));
   assert.equal(c.chat.threadId, thread); assert.equal(c.chat.generation, generation);
   assert.ok(Buffer.byteLength(JSON.stringify(c.chat.read(0, 0))) < 256 * 1024);
-  c.chat.newChat(generation);
+  await c.chat.newChat(generation);
   assert.deepEqual(c.chat.read(c.chat.generation, 0).diagnosticsOmitted, { detail: false, trace: false });
 });
 

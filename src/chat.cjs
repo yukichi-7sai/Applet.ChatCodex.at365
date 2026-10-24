@@ -4,7 +4,8 @@ const { CodexProcess } = require('./codex-process.cjs');
 const { modes, validMode, threadDefaults, turnPolicy } = require('./approval-modes.cjs');
 const { normalizeSettings, startupOptions, threadConfig } = require('./chat-settings.cjs');
 const { format, wireView } = require('./diagnostics.cjs');
-const busy = new Set(['connecting', 'running', 'awaitingInput', 'stopping']);
+const { SessionStore, scopeFor, readHistory } = require('./session.cjs');
+const busy = new Set(['connecting', 'running', 'awaitingInput', 'stopping', 'saving']);
 const textLimit = 32768;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const short = (value, max = 4000) => typeof value === 'string' ? value.slice(0, max) : '';
@@ -24,6 +25,7 @@ class Chat {
   constructor({ clientFactory = () => new CodexProcess(), storage, getHostInfo, changed = () => {}, failed = () => {}, settings } = {}) {
     this.clientFactory = clientFactory;
     this.storage = storage;
+    this.sessions = new SessionStore(storage);
     this.getHostInfo = getHostInfo;
     this.changed = changed;
     this.failed = failed;
@@ -137,6 +139,7 @@ class Chat {
     const candidates = this.entries.filter(entry => reset || entry.revision > after).sort((a, b) => a.revision - b.revision);
     const result = {
       generation: this.generation, reset, state: this.state, detail: this.detail,
+      sessionNotice: this.sessionNotice || '', canStartNew: this.state === 'error',
       displayMode: this.settings.displayMode,
       wireLogEnabled: this.settings.wireLogEnabled,
       diagnosticsOmitted: { detail: this.diagnostics.detail.omitted, trace: this.diagnostics.trace.omitted },
@@ -169,6 +172,7 @@ class Chat {
     this.entries = []; this.items = new Map(); this.requests.clear(); this.accepted.clear();
     this.threadOptions = null; this.threadContext = null; this.resetDiagnostics();
     this.threadId = null; this.threadDefaults = null; this.run = null; this.omitted = false; this.models = [];
+    this.session = null; this.sessionNotice = ''; this.preferenceWarning = '';
     this.state = 'connecting'; this.detail = 'Codexに接続しています。'; this.touch();
     void this.connectAsync(epoch);
     return { accepted: true };
@@ -228,6 +232,10 @@ class Chat {
         const defaults = models.filter(model => model.isDefault);
         if (defaults.length === 1) this.selection = { model: defaults[0].model, effort: this.defaultEffort(defaults[0]) };
       }
+      const savedSession = await this.sessions.load();
+      if (this.closed || epoch !== this.generation) return;
+      if (savedSession) await this.restore(savedSession, epoch);
+      if (this.closed || epoch !== this.generation) return;
       this.state = 'idle';
       this.detail = this.preferenceWarning || (this.validSelection() ? '' : '利用できるモデルと思考量を選んでください。');
       this.touch();
@@ -243,6 +251,43 @@ class Chat {
         this.touch();
       }
     }
+  }
+  operationInstructions(options) {
+    return options.sendOperationInstructions ? 'AppDockの操作を支援するチャットです。設定の操作には既存のAppDock MCPだけを使い、settings.jsonを直接編集しないでください。対象instanceIdは ' +
+      this.hostInstanceId + ' です。MCPの情報取得で一致を確認してから操作してください。一致する接続がなければ操作せず説明してください。設定・コマンドのスキーマと現在のrevisionを取得し、必要なdryRun、保存、結果確認を行ってください。失敗・結果不明の操作を自動再送しないでください。' : undefined;
+  }
+  async restore(session, epoch) {
+    this.detail = '最後のチャットを復元しています。'; this.touch();
+    if (session.scope !== scopeFor(this.client.env)) throw Error('保存した会話のCodex保存先が現在と異なります。「新しいチャット」で開始し直せます。');
+    const developerInstructions = this.operationInstructions(session.options);
+    let response, history;
+    try {
+      response = await this.client.request('thread/resume', { threadId: session.threadId, cwd: session.cwd, excludeTurns: true,
+        ...threadConfig(session.options), ...(developerInstructions ? { developerInstructions } : {}) });
+      if (response?.thread?.id !== session.threadId || response.thread.ephemeral || response.cwd !== session.cwd || response.thread.status?.type !== 'idle')
+        throw Error('Unexpected resume state');
+      history = await readHistory(this.client, session.threadId);
+    } catch { throw Error('保存したチャットを復元できません。Codexの履歴・対応版を確認して再接続するか、「新しいチャット」で開始し直してください。自動再送していません。'); }
+    if (this.closed || epoch !== this.generation) return;
+    this.threadId = session.threadId; this.threadDefaults = session.defaults; this.threadOptions = session.options;
+    this.session = session;
+    this.threadContext = { operationInstructions: developerInstructions || 'Appletの操作指示は送信していません。', memoryMode: session.options.memoryMode,
+      instructionSources: response.instructionSources || [], note: '保存した会話を再開しました。Codex内部の指示全文・メモリ本文は取得していません。' };
+    this.diagnostic('detail', '会話の復元', { ...this.threadContext, cwd: session.cwd, ...session.defaults });
+    for (const turn of history.turns) for (const item of turn.items) {
+      if (item.type === 'userMessage' && Array.isArray(item.content)) {
+        const text = item.content.map(part => part.type === 'text' && typeof part.text === 'string' ? part.text : '[添付データ]').join('\n');
+        this.entry('user', text);
+      } else if (item.type === 'agentMessage' && typeof item.text === 'string') this.entry('assistant', item.text);
+    }
+    this.omitted ||= history.omitted;
+    const lastStatus = history.turns.at(-1)?.status;
+    const uncertain = session.inFlight || lastStatus && !['completed', 'failed', 'interrupted'].includes(lastStatus);
+    this.sessionNotice = uncertain
+      ? '最後のチャットを復元しました。前回の処理は途中で終了した可能性があります。操作結果を確認してから続きを送信してください。自動再送していません。'
+      : ['failed', 'interrupted'].includes(lastStatus)
+        ? '最後のチャットを復元しました。前回の処理は停止または失敗しています。操作結果を確認してから続きを送信してください。'
+        : '最後のチャットを復元しました。そのまま続きを送信できます。';
   }
   defaultEffort(model) { return model.efforts.includes(model.defaultEffort) ? model.defaultEffort : ''; }
   validSelection() {
@@ -298,9 +343,7 @@ class Chat {
     try {
       if (!this.threadId) {
         this.threadOptions = startupOptions(this.settings);
-        const developerInstructions = this.threadOptions.sendOperationInstructions
-          ? 'AppDockの操作を支援するチャットです。設定の操作には既存のAppDock MCPだけを使い、settings.jsonを直接編集しないでください。対象instanceIdは ' +
-            this.hostInstanceId + ' です。MCPの情報取得で一致を確認してから操作してください。一致する接続がなければ操作せず説明してください。設定・コマンドのスキーマと現在のrevisionを取得し、必要なdryRun、保存、結果確認を行ってください。失敗・結果不明の操作を自動再送しないでください。' : undefined;
+        const developerInstructions = this.operationInstructions(this.threadOptions);
         const start = {
           model: run.selection.model, cwd: process.cwd(), serviceName: 'appdock_chatcodex',
           ...threadConfig(this.threadOptions), ...(developerInstructions ? { developerInstructions } : {}),
@@ -315,8 +358,18 @@ class Chat {
         this.threadContext.instructionSources = Array.isArray(result.instructionSources) ? result.instructionSources : [];
         this.diagnostic('detail', 'Codexが返した開始時の情報', { instructionSources: this.threadContext.instructionSources, ...this.threadDefaults });
         this.threadId = result.thread.id;
+        if (result.thread.ephemeral !== true) this.session = {
+          schemaVersion: 1, threadId: this.threadId, cwd: result.cwd || start.cwd, scope: scopeFor(this.client.env),
+          options: structuredClone(this.threadOptions), defaults: structuredClone(this.threadDefaults), inFlight: false,
+        };
       }
       if (run.canceled) { this.finish('interrupted'); return; }
+      if (this.session) {
+        this.session.inFlight = true;
+        await this.sessions.save(this.session);
+        if (this.run !== run || this.closed) return;
+        if (run.canceled) { this.finish('interrupted'); return; }
+      }
       const params = { threadId: this.threadId, input: [{ type: 'text', text }], model: run.selection.model,
         ...turnPolicy(run.approvalMode, this.threadDefaults) };
       if (run.selection.effort) params.effort = run.selection.effort;
@@ -328,8 +381,10 @@ class Chat {
       if (run.canceled) this.interrupt(run);
     } catch (error) {
       if (this.run !== run) return;
+      if (error.message?.startsWith('保存領域')) { this.disconnected(error.message); return; }
       if (error.code !== undefined || error.message?.startsWith('Codexの承認設定')) {
-        this.finish('failed');
+        await this.finish('failed');
+        if (this.closed || this.state === 'error') return;
         this.detail = error.message?.startsWith('Codexの承認設定') ? error.message
           : 'Codexが送信を受け付けませんでした。承認モード・開始時の設定とCodex側の制限を確認してください。自動再送していません。';
         this.touch();
@@ -371,10 +426,20 @@ class Chat {
     } else if (method === 'turn/completed') this.finish(p.turn?.status || 'completed');
     else if (method === 'error') { this.detail = 'Codexでエラーが発生しました。'; this.touch(); }
   }
-  finish(status) {
+  async finish(status) {
+    if (!this.run) return;
     clearTimeout(this.stopTimer);
     for (const entry of this.entries) delete entry.active;
-    this.run = null; this.requests.clear(); this.state = 'idle';
+    this.run = null; this.requests.clear(); this.state = 'saving'; this.touch();
+    const generation = this.generation;
+    try {
+      if (this.session) { this.session.inFlight = false; await this.sessions.save(this.session); }
+    } catch (error) {
+      if (!this.closed && generation === this.generation) this.disconnected(error.message);
+      return;
+    }
+    if (this.closed || generation !== this.generation) return;
+    this.state = 'idle';
     this.detail = status === 'interrupted' ? '停止しました。送信済みの操作は取り消されない場合があります。'
       : status === 'failed' ? 'Codexの処理に失敗しました。結果を確認してください。' : '';
     if (status === 'failed') Promise.resolve(this.failed(this.detail)).catch(() => {});
@@ -403,12 +468,18 @@ class Chat {
     }, 15000);
     this.stopTimer.unref?.();
   }
-  newChat(generation) {
+  async newChat(generation) {
     this.assertGeneration(generation);
-    if (this.state !== 'idle' || this.saving) throw Error('待機中に新しいチャットを開始してください。');
+    if (!['idle', 'error'].includes(this.state) || this.saving) throw Error('待機中に新しいチャットを開始してください。');
+    this.saving = true; this.touch();
+    try { await this.sessions.save(null); this.assertGeneration(generation); }
+    finally { this.saving = false; this.touch(); }
+    const reconnect = this.state === 'error';
     this.generation++; this.entries = []; this.items = new Map(); this.accepted.clear(); this.requests.clear();
     this.threadOptions = null; this.threadContext = null; this.resetDiagnostics();
     this.threadId = null; this.threadDefaults = null; this.detail = ''; this.omitted = false; this.touch();
+    this.session = null; this.sessionNotice = '';
+    if (reconnect) { this.state = 'disconnected'; this.connect(this.generation); }
     return { accepted: true };
   }
   disconnected(message) {
@@ -535,7 +606,7 @@ class Chat {
     if (this.run?.turnId) {
       try { this.client.send({ id: 'shutdown', method: 'turn/interrupt', params: { threadId: this.threadId, turnId: this.run.turnId } }); } catch {}
     }
-    await this.client?.close();
+    await Promise.allSettled([this.client?.close(), this.sessions.flush()]);
     this.entries = []; this.run = null;
   }
 }

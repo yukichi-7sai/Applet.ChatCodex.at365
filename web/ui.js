@@ -9,7 +9,7 @@ const approvalIcons = {
 };
 let generation = 0, after = 0, state, draftSelection, performing = false, reading = false, readAgain = false, autoConnected = false, composing = false;
 const entries = new Map(), bubbles = new Map(), cards = new Map();
-const labels = { disconnected: '未接続', connecting: '接続中…', idle: '接続済み', running: '応答中…', awaitingInput: '返答を待っています', stopping: '停止中…', error: '接続を確認してください' };
+const labels = { disconnected: '未接続', connecting: '接続中…', idle: '接続済み', running: '応答中…', awaitingInput: '返答を待っています', stopping: '停止中…', saving: '会話を保存しています…', error: '接続を確認してください' };
 const call = (id, input = {}) => window.appletPage.call('actions.invoke', { id, input: { generation, ...input } });
 function notice(message = '') { $('notice').textContent = message; $('notice').hidden = !message; }
 function option(value, label) { const node = document.createElement('option'); node.value = value; node.textContent = label; return node; }
@@ -69,7 +69,7 @@ function renderControls() {
   renderApproval(idle);
   $('model').disabled = !idle;
   $('effort').disabled = !idle || !model?.efforts.length;
-  $('new-chat').disabled = !idle || !!draftSelection;
+  $('new-chat').disabled = !(idle || state.canStartNew && !performing && !state.saving) || !!draftSelection;
   const active = ['running', 'awaitingInput', 'stopping'].includes(state.state);
   const sendLabel = active ? (state.state === 'stopping' ? '停止中…' : '停止') : '送信';
   $('send-label').textContent = sendLabel; $('send').setAttribute('aria-label', sendLabel); $('send').title = sendLabel;
@@ -81,6 +81,8 @@ function renderControls() {
   $('connect').disabled = performing;
   $('status').textContent = (labels[state.state] || state.state) + (state.detail ? ' — ' + state.detail : '');
   $('settings-note').hidden = !state.settingsPending;
+  $('session-note').textContent = state.sessionNotice || '';
+  $('session-note').hidden = !state.sessionNotice;
   const shortcut = state.sendKey === 'enter' ? 'Enter' : 'Ctrl+Enter';
   $('input-hint').textContent = shortcut + 'で送信・' + (state.sendKey === 'enter' ? 'Shift+Enter' : 'Enter') + 'で改行';
   if (!active) $('send').title = '送信（' + shortcut + '）';

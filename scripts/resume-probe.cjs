@@ -1,0 +1,88 @@
+'use strict';
+// Persistent native tests use an isolated CODEX_HOME and a loopback-only Responses fixture.
+const fs = require('node:fs'), path = require('node:path'), http = require('node:http'), assert = require('node:assert/strict');
+const { createHash } = require('node:crypto');
+const { execFileSync } = require('node:child_process');
+const { Chat } = require('../src/chat.cjs');
+const { CodexProcess, resolveCodex } = require('../src/codex-process.cjs');
+const root = path.resolve(__dirname, '..'), folder = path.join(root, '.artifacts', 'resume-probe-' + Date.now());
+const home = path.join(folder, 'codex-home'), workspace = path.join(folder, 'workspace'), storageFile = path.join(folder, 'storage.json');
+fs.mkdirSync(home, { recursive: true }); fs.mkdirSync(workspace, { recursive: true });
+const command = resolveCodex(), calls = [], requests = [];
+const env = { ...process.env, CODEX_HOME: home, CODEX_SQLITE_HOME: home, OPENAI_API_KEY: '', CODEX_API_KEY: '' };
+delete env.OPENAI_BASE_URL;
+const storage = {
+  get: async key => fs.existsSync(storageFile) ? JSON.parse(fs.readFileSync(storageFile, 'utf8'))[key] : undefined,
+  set: async (key, value) => {
+    const data = fs.existsSync(storageFile) ? JSON.parse(fs.readFileSync(storageFile, 'utf8')) : {};
+    data[key] = value; fs.writeFileSync(storageFile, JSON.stringify(data));
+  },
+};
+const server = http.createServer(async (request, response) => {
+  assert.equal(request.headers.authorization, undefined, 'isolated provider must not receive credentials');
+  assert.ok(request.url.startsWith('/v1/responses'));
+  let body = ''; for await (const part of request) { body += part; assert.ok(body.length < 4 * 1024 * 1024); }
+  requests.push(JSON.parse(body));
+  response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+  const text = requests.length === 1 ? 'RESUME_FIRST_OK' : 'RESUME_CONTINUED_OK';
+  const item = { id: 'msg_fixture_' + requests.length, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] };
+  for (const event of [
+    { type: 'response.created', response: { id: 'resp_fixture_' + requests.length } },
+    { type: 'response.output_item.added', output_index: 0, item: { ...item, status: 'in_progress', content: [] } },
+    { type: 'response.output_text.delta', item_id: item.id, output_index: 0, content_index: 0, delta: text },
+    { type: 'response.output_item.done', output_index: 0, item },
+    { type: 'response.completed', response: { id: 'resp_fixture_' + requests.length, status: 'completed', output: [item], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+  ]) response.write('data: ' + JSON.stringify(event) + '\n\n');
+  response.end();
+});
+const make = () => new Chat({ storage, settings: { sendOperationInstructions: false, memoryMode: 'exclude' },
+  getHostInfo: async () => ({ instanceId: 'isolated-resume-fixture' }), clientFactory: () => {
+    const client = new CodexProcess({ command, env, cwd: workspace });
+    const request = client.request.bind(client);
+    client.request = (method, params, ...rest) => {
+      if (method === 'thread/start') params = { ...params, cwd: workspace };
+      calls.push({ method, params }); return request(method, params, ...rest);
+    };
+    return client;
+  } });
+async function until(check) {
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 20)); }
+  throw Error('Native resume fixture timed out');
+}
+async function connect(chat) { chat.connect(chat.generation); await until(() => ['idle', 'error'].includes(chat.state)); assert.equal(chat.state, 'idle', chat.detail); }
+async function send(chat, id, text) { chat.send(chat.generation, id, text); await until(() => ['idle', 'error'].includes(chat.state)); assert.equal(chat.state, 'idle', chat.detail); }
+let first, second;
+const result = { ok: false, isolatedCodexHome: true, localMockProvider: true, realModelUsed: false };
+(async () => {
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  fs.writeFileSync(path.join(home, 'config.toml'), 'model="gpt-6.1-sol"\nmodel_provider="fixture"\ncli_auth_credentials_store="file"\n[model_providers.fixture]\nname="Fixture"\nbase_url="http://127.0.0.1:' + server.address().port + '/v1"\nwire_api="responses"\nrequires_openai_auth=false\nsupports_websockets=false\n');
+  try {
+    first = make(); await connect(first);
+    const model = first.models.find(item => item.model === 'gpt-6.1-sol'); assert.ok(model);
+    await first.select(first.generation, model.model, model.efforts.includes('low') ? 'low' : model.efforts[0] || '');
+    await first.selectApproval(first.generation, 'full');
+    await send(first, 'first', 'ISOLATED_RESUME_USER_FIRST');
+    const threadId = first.threadId, defaults = structuredClone(first.threadDefaults);
+    assert.ok(first.entries.some(entry => entry.text.includes('RESUME_FIRST_OK')));
+    await first.close(); calls.length = 0;
+    second = make(); await connect(second);
+    assert.equal(second.threadId, threadId); assert.deepEqual(second.threadDefaults, defaults);
+    assert.ok(second.entries.some(entry => entry.role === 'user' && entry.text.includes('ISOLATED_RESUME_USER_FIRST')));
+    assert.ok(second.entries.some(entry => entry.role === 'assistant' && entry.text.includes('RESUME_FIRST_OK')));
+    assert.equal(requests.length, 1); assert.equal(calls.some(call => call.method === 'turn/start'), false);
+    await second.selectApproval(second.generation, 'inherit');
+    await send(second, 'continued', 'ISOLATED_RESUME_USER_CONTINUED');
+    assert.equal(second.threadId, threadId); assert.equal(requests.length, 2);
+    const input = JSON.stringify(requests[1].input);
+    for (const text of ['ISOLATED_RESUME_USER_FIRST', 'RESUME_FIRST_OK', 'ISOLATED_RESUME_USER_CONTINUED']) assert.ok(input.includes(text), text);
+    assert.equal(input.split('ISOLATED_RESUME_USER_FIRST').length - 1, 1);
+    assert.ok(second.entries.some(entry => entry.text.includes('RESUME_CONTINUED_OK')));
+    assert.equal(calls.find(call => call.method === 'turn/start').params.sandboxPolicy.type, defaults.sandboxPolicy.type);
+    Object.assign(result, { ok: true, codexVersion: execFileSync(command.file, [...command.args, '--version'], { encoding: 'utf8', windowsHide: true }).trim(), codexSha256: createHash('sha256').update(fs.readFileSync(command.file)).digest('hex'),
+      restoredMessages: 2, providerRequests: requests.length, historyPreservedInNextInput: true, automaticReplay: false, originalInheritanceRestored: true });
+  } finally {
+    await first?.close(); await second?.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+    fs.writeFileSync(path.join(folder, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify({ ...result, folder }));
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
