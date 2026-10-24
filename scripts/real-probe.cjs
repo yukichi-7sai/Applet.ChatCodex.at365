@@ -31,9 +31,11 @@ client.on('notification', ({ method, params: p = {} }) => {
     const model = models.data.find(model => model.isDefault) || models.data[0];
     result.model = model.model;
     const thread = await client.request('thread/start', {
-      model: model.model, cwd: root,
+      model: model.model, cwd: root, ephemeral: true,
       developerInstructions: '接続試験です。AppDockのMCP情報取得だけを使用し、設定変更、コマンド実行、音声、ファイル操作は行わないでください。返答は短いテキストだけにしてください。',
     });
+    if (thread.thread?.ephemeral !== true || thread.thread.path) throw Error('Test thread must not persist');
+    result.ephemeralThread = true;
     threadId = thread.thread.id;
     const params = { threadId, model: model.model, input: [{ type: 'text', text: 'AppDockのMCPが接続できる場合は情報取得だけでバージョンを確認してください。変更や他の操作はせず、最後に接続確認結果を短く返してください。' }] };
     const choices = model.supportedReasoningEfforts.map(e => e.reasoningEffort);

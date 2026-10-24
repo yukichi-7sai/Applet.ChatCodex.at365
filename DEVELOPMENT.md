@@ -33,6 +33,8 @@ Node Applet（CommonJS JavaScript）とローカルHTML/JavaScript UI。実行�
 
 実Codex GUI試験は固定Nodeで `scripts/real-ui-test.cjs`、親プロセス異常終了の確認は `scripts/lifecycle-probe.cjs` を実行する。実Codex試験はサインイン済み環境とモデル利用を伴うので、通常の単体試験には含めない。本文・認証を検証ログへ記録しない。
 
+実Codexで会話を開始する試験はthread/startへ `ephemeral: true` を指定し、応答のthread.ephemeralと保存パス未設定を確認する。GUI試験は隔離コピーのentryだけで指定を追加し、通常版の起動時送信や会話保存設定を変更しない。`dev.bat approval` は終了後に別App Serverから試験用cwdの保存履歴を照会し、0件であることも確認する。過去の試験で残った履歴は自動削除しない。
+
 固定Nodeで `scripts/startup-probe.cjs` を実行すると、実App Serverのthread/startでメモリ指定の継承／true／falseと不正値拒否を確認する。モデルへの送信は行わず、Codex設定ファイルの前後hash一致を記録する。自動注入されたメモリ本文は収集しない。メモリ機能そのものはCodex設定に従う。
 
 `dev.bat ui` は送信キーの既定Ctrl+Enter・即時Enter切替・改行・IMEイベントの抑止、詳細／通信の独立設定と折りたたみ、大量ログ後の古いDOM回収・会話保持・記録継続、秘密値の伏せ字とHTML非実行、開始時設定の変更通知も確認する。単体試験では件数・UTF-8バイト上限の両方と、通常会話とは別の保持枠・差分の回収位置を確認する。IME試験は合成イベントであり、物理キーボードでの日本語変換操作とは区別する。`dev.bat approval` は開始指示とメモリ指定の変更が新しい会話だけへ適用されることも実App Serverで確認する。

@@ -14,8 +14,8 @@ const client=new CodexProcess();
    const params={cwd:root,ephemeral:true,serviceName:'appdock_startup_probe'};
    if(mode!=='inherit')params.config={'memories.use_memories':mode==='include'};
    const response=await client.request('thread/start',params);
-   if(!response.thread?.id)throw Error('Thread start failed');
-   result.accepted.push({mode,instructionSourcesCount:response.instructionSources?.length||0});
+   if(!response.thread?.id||response.thread.ephemeral!==true||response.thread.path)throw Error('Test thread must not persist');
+   result.accepted.push({mode,ephemeral:true,instructionSourcesCount:response.instructionSources?.length||0});
   }
   try{await client.request('thread/start',{cwd:root,ephemeral:true,config:{'memories.use_memories':'invalid-bool'}});}catch(error){result.invalidMemoryValueRejected=error.code!==undefined;}
   result.configFileUnchanged=before===configHash();

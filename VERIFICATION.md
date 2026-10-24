@@ -294,3 +294,22 @@ GUI試験の初回は、試験設定へshortcutsの誤った配列値を追加�
 - 発行済み0.5.0のfeed・ZIP・全11ファイル、実行コード／manifest 10ファイルとソース、生成USAGEと利用仕様を再照合した。GUIと実Codex試験の隔離コピーにある実行コード／Web資産9ファイルも発行物と一致した。版・ZIPのサイズ・hashは発行時と同一で、再発行はしていない。
 - 判定と照合は `.artifacts/commit-validation-050-20261025/reuse.json`、phase-comparison.json、environment.json、publish-verification.jsonへ記録した。今回実行した文書・文字コード・構文・ローカルリンク・設定既定値・差分検査は同ディレクトリのdocument-check.jsonで確認できる。製品修正は行わず、今回追加した内容はこの検証記録だけとする。
 - 実効author／committerは `yukichi-7sai <yukichi@at365.jp>`。両リモートmainはプッシュ前に8692cfaと一致した。stage対象・作業ファイルとの一致・tree、commit後SHA、GitHub／AQUAのmain照合は同ディレクトリのstage.json、commit.json、push.jsonへ記録する。本体変更・実利用deploy・Releaseは行わない。
+
+## 2026-10-25 実Codex試験の履歴を非保存化
+
+- STARTUP_OK等の疎通文はLUNAで実行したapproval-ui-testの送信であり、通常版の画面起動による自動送信ではなかった。通常版のsrc／webと発行済みパッケージにその文面はなく、会話作成は利用者の最初の送信時だけであることを確認した。
+- 実Codexを使うapproval-ui-test、real-ui-test、real-probeのthread/startへephemeral:trueを追加し、応答のthread.ephemeralがtrue、保存パスが未設定であることを検査するようにした。既に非保存だったstartup-probeも同じ応答検査を追加した。通常版の起動処理・会話保存設定・Codex設定ファイル・既存履歴は変更していない。
+- approval-ui-testは隔離コピーのentryだけで非保存を指定し、終了後に別のApp Serverから試験用cwdに限定して保存履歴を照会する。通常の利用者の履歴を列挙・削除する処理は加えていない。
+- 実Codex 0.161.0でMCP承認・4モード・継承復元・開始時設定切替が成功し、2つのテスト会話がephemeralで、終了後の試験用保存履歴が0件であることを確認した。証跡 `.artifacts/ephemeral-tests-20261025/approval-1792877958905/`、結果 `.artifacts/approval-ui-1792877959763/result.json`。固定AppDock EXE SHA256は `a8cd99cf5b1e572b5ebba85e0783933dd8506534095c559a524ffff27629515a`。
+- 開始時プローブは継承／true／falseすべてephemeral:trueを確認し、不正値拒否とCodex設定ファイルの前後hash一致も成功。証跡 `.artifacts/ephemeral-tests-20261025/startup-1792877929632/`。両工程の終了コード0、前後入力hash一致。real-ui-testとreal-probeは構文・同じ開始API指定を確認し、今回のモデル送信試験はapproval-ui-testに限定した。
+- 初回は履歴読取り用クライアントの引数配列の指定漏れで失敗した。args:[]を指定して再実行し、保存履歴0件まで成功した。失敗ログ `.artifacts/ephemeral-tests-20261025/approval-1792877868608/` は区別して保持する。
+- 開発試験と文書だけの修正として差分・影響を確認した。src／web／manifest／package／梱包ガイドは変更せず、製品版0.5.0の版更新・再発行は行わない。文書・文字コード・構文・リンク・空白を確認し、試験プロセスの残存なしを確認した。commit・push・Release・実利用deployは行っていない。
+- 開始プローブは新しい成功分が4件目になったため、最古の `startup-probe-1792871170927` の結果を退避してフォルダー1件を整理し、直近3件を保持した。過去版のGUI／実承認の再利用証跡と解消済み失敗診断は保持した。対象パス・通常ディレクトリ・成功結果・プロセス終了を確認済み。記録 `.artifacts/ephemeral-tests-20261025/cleanup.json`。
+
+## 2026-10-25 非保存テスト修正のコミット・プッシュ照合
+
+- 4ea18a6以降の開発試験4スクリプトと関連文書・指示の7ファイルを対象とする。差分をレビューし、製品のsrc／web／manifest／package／利用仕様と既存履歴へ変更がないことを確認した。通常の会話へ非保存を強制しない。未コミット変更を保持し、pull・統合は行っていない。
+- 標準単体33件は対象ソース・試験・固定Nodeが一致しており再利用した。記録上変わったGUI／プローブのスクリプト、本体EXE、packerは単体試験が読み込まない。開始プローブも、無関係な承認ハーネスと本体EXE以外の入力が一致したため再利用した。CLIは0.161.0、SHA256 `a0f89acca07a511734cac7fddee26b2106fab68918717bc90df16104a0760a30` で一致した。
+- 本体の発行EXEが更新されていたため、非保存の実承認GUIを再実行し、4モード・MCP承認・継承復元・開始時設定の切替と、終了後の試験用保存履歴0件を確認した。証跡 `.artifacts/commit-validation-ephemeral-20261025/approval-1792878743053/`、結果 `.artifacts/approval-ui-1792878743967/result.json`。終了コード0・前後および現在の入力37件・ログhash一致。固定本体EXE SHA256は `98036797be8d071e821a1b38f3399920040c0faef2113f898298d39dfc0458f1`。
+- 再利用判定は同ディレクトリのreuse.json、phase-comparison.json、environment.jsonに記録した。発行済み0.5.0のfeed／ZIP／全11ファイル・ソース10ファイル・生成USAGEを再照合して一致し、版更新・再発行はしていない。文書・文字コード・構文・リンク・設定既定値・差分は同ディレクトリのdocument-check.jsonへ記録する。
+- 実効author／committerは `yukichi-7sai <yukichi@at365.jp>`。両リモートmainはプッシュ前に4ea18a6と一致した。stage対象・tree・commit後SHA・両mainの照合は同ディレクトリのstage.json、commit.json、push.jsonへ記録する。本体変更・Release・実利用deployは行わない。

@@ -11,6 +11,13 @@ fs.cpSync(path.join(root, 'out/Applet.ChatCodex.at365'), folder, { recursive: tr
 const source = resolveCodex().file, executable = path.join(bin, 'codex.exe');
 fs.copyFileSync(source, executable);
 assert.equal(hash(source), hash(executable));
+const manifest = require('../extension.json');
+fs.writeFileSync(path.join(folder, 'extension.json'), JSON.stringify({ ...manifest, entry: 'ephemeral-entry.cjs' }));
+fs.writeFileSync(path.join(folder, 'ephemeral-entry.cjs'),
+  "const {createApplet}=require('./src/applet.cjs');const {CodexProcess}=require('./src/codex-process.cjs');" +
+  "module.exports=createApplet({clientFactory:()=>{const c=new CodexProcess();const request=c.request.bind(c);c.request=async(method,params,...rest)=>{" +
+  "const result=await request(method,method==='thread/start'?{...params,ephemeral:true}:params,...rest);" +
+  "if(method==='thread/start'&&(result.thread?.ephemeral!==true||result.thread.path))throw Error('Test thread must not persist');return result;};return c;}});");
 const settings = require(path.join(host, 'out/main/shared/settings-schema')).createDefaultSettings();
 settings.host.hardwareAcceleration = false; settings.host.closeToTray = false; settings.host.soundEnabled = false;
 settings.globalShortcutCommands = []; settings.gestures.enabled = false;

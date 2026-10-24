@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { resolveCodex } = require('../src/codex-process.cjs');
+const { resolveCodex, CodexProcess } = require('../src/codex-process.cjs');
 const root = path.resolve(__dirname, '..'), host = path.resolve(root, '../AppDock.at365');
 const { launch, until, hash } = require(path.join(host, 'scripts/page-test-host.cjs'));
 const profile = path.join(root, '.artifacts', 'approval-ui-' + Date.now());
@@ -27,9 +27,10 @@ fs.writeFileSync(path.join(folder, 'diagnostic-entry.cjs'),
   "c.on('request',m=>record({method:m.method,mode:m.params?.mode,fields:Object.keys(m.params?.requestedSchema?.properties||{})}));" +
   "c.on('notification',m=>{if(m.method==='item/completed'&&m.params?.item?.type==='mcpToolCall')record({method:m.method,server:m.params.item.server,tool:m.params.item.tool,status:m.params.item.status,error:m.params.item.error});});" +
   'const request=c.request.bind(c);let checked=false;c.request=async(method,params,...rest)=>{' +
+  "if(method==='thread/start')params={...params,ephemeral:true};" +
   "if(method==='turn/start'&&!checked){checked=true;const answer=await request('mcpServer/tool/call',{threadId:params.threadId,server:'chatcodex_approval_fixture',tool:'ask_consent',arguments:{}},60000);record({method:'diagnosticMcp',accepted:JSON.stringify(answer).includes('CONSENT_ACCEPTED')});}" +
-  'const result=await request(method,params,...rest);if(method===\'thread/start\'||method===\'turn/start\')fs.appendFileSync(' + JSON.stringify(policiesFile) +
-  ",JSON.stringify(method==='thread/start'?{method,approvalPolicy:result.approvalPolicy,approvalsReviewer:result.approvalsReviewer,sandboxPolicy:result.sandbox,operationInstructionsSent:!!params.developerInstructions,memoryUse:params.config?.['memories.use_memories']??'inherit'}:{method,approvalPolicy:params.approvalPolicy,approvalsReviewer:params.approvalsReviewer,sandboxPolicy:params.sandboxPolicy})+'\\n');return result;};return c;}});");
+  "const result=await request(method,params,...rest);if(method==='thread/start'&&(result.thread?.ephemeral!==true||result.thread.path))throw Error('Test thread must not persist');if(method==='thread/start'||method==='turn/start')fs.appendFileSync(" + JSON.stringify(policiesFile) +
+  ",JSON.stringify(method==='thread/start'?{method,threadId:result.thread.id,cwd:params.cwd,ephemeral:result.thread.ephemeral,approvalPolicy:result.approvalPolicy,approvalsReviewer:result.approvalsReviewer,sandboxPolicy:result.sandbox,operationInstructionsSent:!!params.developerInstructions,memoryUse:params.config?.['memories.use_memories']??'inherit'}:{method,approvalPolicy:params.approvalPolicy,approvalsReviewer:params.approvalsReviewer,sandboxPolicy:params.sandboxPolicy})+'\\n');return result;};return c;}});");
 const settings = require(path.join(host, 'out/main/shared/settings-schema')).createDefaultSettings();
 settings.host.hardwareAcceleration = false; settings.host.closeToTray = false; settings.host.soundEnabled = false;
 settings.globalShortcutCommands = []; settings.gestures.enabled = false;
@@ -73,6 +74,7 @@ let instance, page;
       ['on-request', 'user', 'workspaceWrite'], ['on-request', 'auto_review', 'workspaceWrite'], ['never', 'user', 'dangerFullAccess'], ['on-request', 'user', 'readOnly'],
     ]);
     assert.equal(baseline.operationInstructionsSent, false); assert.equal(baseline.memoryUse, false);
+    assert.equal(baseline.ephemeral, true);
     await instance.save({ extensionId: 'at365.chatcodex', settings: { chatDisplayMode: 'detail', sendOperationInstructions: true, memoryMode: 'include' } });
     await until(() => page.getByTestId('settings-note').isVisible(), 'startup options pending');
     await page.getByTestId('new-chat').click();
@@ -82,11 +84,19 @@ let instance, page;
     await until(async () => (await page.locator('.message[data-role="assistant"] .message-text').allTextContents()).join('').includes('STARTUP_OK') && (await page.getByTestId('status').textContent()).startsWith('接続済み'), 'changed startup options completed', 90000);
     const latest = fs.readFileSync(policiesFile, 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(p => p.method === 'thread/start').at(-1);
     assert.equal(latest.operationInstructionsSent, true); assert.equal(latest.memoryUse, true);
+    assert.equal(latest.ephemeral, true);
     assert.ok((await page.getByTestId('conversation').textContent()).includes('settings.json'));
     const result = { ok: true, fixture: 'diagnostic MCP server called via native mcpServer/tool/call; real Codex and Applet UI', appletVersion: manifest.version,
       codexVersion: execFileSync(native, ['--version'], { encoding: 'utf8', windowsHide: true }).trim(),
       hostSha256: instance.hash, codexSha256: hash(native), strictConfigOverrides: true, realMcpApprovalAnswered: true, fourModesAccepted: true, inheritedReadOnlyRestored: true, startupSettingsVerified: true, policies };
     await instance.close(); instance = null;
+    const reader = new CodexProcess({ command: { file: native, args: [] } });
+    try {
+      await reader.start();
+      const stored = await reader.request('thread/list', { cwd: baseline.cwd, sourceKinds: ['appServer'], limit: 100 });
+      assert.ok(Array.isArray(stored.data)); assert.equal(stored.data.length, 0); assert.ok(!stored.nextCursor);
+      result.ephemeralThreadsVerified = true; result.storedTestThreads = stored.data.length;
+    } finally { await reader.close(); }
     fs.writeFileSync(path.join(profile, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify({ ...result, profile }));
   } catch (error) {
     if (page && !page.isClosed()) {
