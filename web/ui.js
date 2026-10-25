@@ -54,6 +54,37 @@ function positionApprovalMenu() {
   menu.style.left = Math.max(12, Math.min(anchor.left, innerWidth - box.width - 12)) + 'px';
   menu.style.top = Math.max(12, Math.min(anchor.top - box.height - 8, innerHeight - box.height - 12)) + 'px';
 }
+function usageTime(seconds) {
+  return new Intl.DateTimeFormat('ja-JP', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(seconds * 1000));
+}
+function renderUsage(valid) {
+  const usage = state.usage;
+  $('usage-panel').hidden = !usage;
+  if (!usage) return;
+  $('usage-title').textContent = usage.kind === 'usage' ? 'Codexの利用制限で停止しました' : 'Codexの一時的な送信制限で停止しました';
+  const labels = {
+    unknown: '利用可能な状態か確認できていません。時間をおいて、もう一度利用状況を確認してください。',
+    blocked: '利用制限が続いています。時間をおいて、利用状況を確認してください。',
+    available: '利用可能な状態を確認しました。［作業を再開］から続けられます。',
+    unavailable: '利用状況を取得できませんでした。時間をおいて、もう一度確認してください。',
+  };
+  $('usage-status').textContent = usage.checking ? '利用状況を確認しています…' : usage.note || (!usage.canContinue
+    ? 'この送信が保存されたか確認できません。元の依頼を確認し、入力欄から送信してください。' : labels[usage.status] || labels.unknown);
+  $('usage-reset').textContent = usage.nextReset ? '次のリセット予定：' + usageTime(usage.nextReset) + '（この端末の時刻）' : 'リセット予定時刻は取得できていません。';
+  $('usage-checked').textContent = usage.checkedAt ? '最終確認：' + usageTime(usage.checkedAt / 1000) : '';
+  $('usage-windows').replaceChildren();
+  for (const window of usage.windows || []) {
+    const duration = window.durationMins;
+    const period = !duration ? '利用枠' : duration % 1440 === 0 ? duration / 1440 + '日枠' : duration % 60 === 0 ? duration / 60 + '時間枠' : duration + '分枠';
+    const row = document.createElement('li');
+    row.textContent = window.label + '・' + period + '：使用率 ' + window.usedPercent + '%／リセット予定 ' + (window.resetsAt ? usageTime(window.resetsAt) : '不明');
+    $('usage-windows').append(row);
+  }
+  $('usage-details').hidden = !usage.windows?.length;
+  const idle = state.state === 'idle' && !performing && !state.saving && !usage.checking;
+  $('usage-check').disabled = !idle;
+  $('usage-resume').disabled = !idle || usage.status !== 'available' || !usage.canContinue || !valid || !!draftSelection;
+}
 function renderControls() {
   if (!state) return;
   const selected = draftSelection || state.selection;
@@ -65,7 +96,7 @@ function renderControls() {
   $('effort').replaceChildren(option('', model?.efforts.length ? '思考量を選択' : '指定なし'));
   for (const effort of model?.efforts || []) $('effort').append(option(effort, effortNames[effort] || effort));
   $('effort').value = selected.effort;
-  const idle = state.state === 'idle' && !performing && !state.saving;
+  const idle = state.state === 'idle' && !performing && !state.saving && !state.usage?.checking;
   renderApproval(idle);
   $('model').disabled = !idle;
   $('effort').disabled = !idle || !model?.efforts.length;
@@ -76,6 +107,7 @@ function renderControls() {
   $('send').classList.toggle('is-stop', active);
   $('send-icon').setAttribute('d', active ? 'M7 7h10v10H7Z' : 'M12 19V5m-6 6 6-6 6 6');
   const valid = state.approvalModes?.some(mode => mode.id === state.approvalMode) && model && (!model.efforts.length || model.efforts.includes(selected.effort));
+  renderUsage(valid);
   $('send').disabled = performing || (active ? state.state === 'stopping' : !idle || !valid || !!draftSelection || !$('input').value.trim());
   $('connect').hidden = !['error', 'disconnected'].includes(state.state);
   $('connect').disabled = performing;
@@ -231,6 +263,8 @@ $('composer').addEventListener('submit', event => {
 });
 $('new-chat').addEventListener('click', () => void perform(async () => { await call('chat.new'); $('input').value = ''; }));
 $('connect').addEventListener('click', () => void perform(() => call('chat.connect')));
+$('usage-check').addEventListener('click', () => void perform(() => call('chat.usage')));
+$('usage-resume').addEventListener('click', () => void perform(() => call('chat.resume', { requestId: crypto.randomUUID(), pauseId: state.usage?.pauseId })));
 $('approval-menu').addEventListener('toggle', event => {
   const open = event.newState === 'open'; $('approval').setAttribute('aria-expanded', String(open));
   if (open) { positionApprovalMenu(); $('approval-options').querySelector('[aria-checked="true"]')?.focus(); }

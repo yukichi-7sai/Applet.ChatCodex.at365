@@ -32,6 +32,8 @@ function createApplet(options = {}) {
         case 'chat.new': return chat.newChat(input.generation);
         case 'chat.stop': return chat.stop(input.generation);
         case 'chat.respond': return chat.respond(input.generation, input.requestId, input.response);
+        case 'chat.usage': return chat.checkUsage(input.generation);
+        case 'chat.resume': return chat.resumeWork(input.generation, input.requestId, input.pauseId);
         default: throw Error('未対応のページ操作です。');
       }
     },

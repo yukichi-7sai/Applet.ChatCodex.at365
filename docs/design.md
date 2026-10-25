@@ -1,6 +1,6 @@
 # ChatCodex Applet 初期設計
 
-状態: 0.6.0の実装仕様。初期設計の作成日: 2026-10-25。初期設計は実装前にコミット済み。
+状態: 0.6.1の実装仕様。初期設計の作成日: 2026-10-25。初期設計は実装前にコミット済み。
 
 第13節は将来構想であり、現在の実装仕様・利用可能な機能とは区別する。
 
@@ -14,6 +14,7 @@ AppDock内に小さなCodexチャットを置き、既存MCPによる設定操�
 - モデルと思考量、4つの承認モードの選択。
 - 実行中の停止、新しいチャット。
 - AppDock・Applet再起動後の最後のチャットの復元と、同じ会話での作業再開。
+- 利用制限による停止理由・リセット予定の表示、利用状況の確認、同じ会話の手動再開。
 - Codexが要求した質問・確認への返答、接続・失敗状態の表示。
 - Enter／Ctrl+Enterの送信キー、通常／詳細の表示設定、独立した開発者向け通信ログ、開始時の操作指示と既存メモリ利用の設定。
 
@@ -125,7 +126,7 @@ Codex wireは独自のJSON-RPC形式で、本体用JsonLinePeerの転用はし�
 
 ## 6. 本体とAppletの画面通信
 
-既存 `window.appletPage.call('actions.invoke', ...)` とNodeの `onPageAction` を使う。Applet独自のページ操作は次の8件だけとする。
+既存 `window.appletPage.call('actions.invoke', ...)` とNodeの `onPageAction` を使う。Applet独自のページ操作は次の10件だけとする。
 
 | 操作 | 入力例・役割 |
 | --- | --- |
@@ -137,6 +138,8 @@ Codex wireは独自のJSON-RPC形式で、本体用JsonLinePeerの転用はし�
 | `chat.new` | generation。待機中に新しい会話へ切り替える |
 | `chat.stop` | generation。現在の実行を停止 |
 | `chat.respond` | generation / requestId / response。対応する質問・確認へ返答 |
+| `chat.usage` | generation。停止した会話の利用状況の確認を受け付ける |
+| `chat.resume` | generation / requestId / pauseId。利用可否を再確認して同じ会話の作業再開を受け付ける |
 
 引数は宣言したstring/number/booleanのみとする。思考量の指定なしは空文字を内部値へ変換する。質問への構造化回答は小さなJSON文字列で受け、Appletでその質問の型と選択肢に照合する。任意RPCのmethodやCodex要求全体を画面から渡せる入口にはしない。
 
@@ -189,6 +192,14 @@ Applet異常終了時に、App Serverがpipe切断で終了し子孫も残さな
 PC専用Storageの `preferences` に `{schemaVersion:1, model, effort, approvalMode}` を保存する。approvalModeがない保存値はinheritとして読み、書き換えない。未知のモードは選び直すまで送信しない。破損・未知版は勝手に書き換えず、警告して明示的な選択保存で置き換える。
 
 同じStorageの `lastSession` へ `{schemaVersion:1, threadId, cwd, scope, options, defaults, inFlight}` を保存する。scopeはCodex保存先のパスのSHA256、optionsは開始時の操作指示・メモリ利用、defaultsは初回thread/start時の承認・サンドボックス設定。本文、認証、確認回答、生ログは複製しない。モデル候補、未送信入力、未回答カードも保存しない。
+
+利用制限で失敗したturnは同じlastSessionへ任意の `pause:{id,kind,stoppedAt,canContinue}` を付ける。kindはusage／rate、canContinueはturn IDを確認できたかを表す。pauseなしの既存値はそのまま読み、ファイル追加・データ移行は行わない。利用状況やアカウント識別子は保存しない。
+
+`src/usage.cjs` はusageLimitExceeded、rateLimitExceeded、既知の通信エラーvariantのHTTP 429だけを分類する。エラー本文から推測しない。turnの失敗が確定した時だけ停止情報を保存し、Codexの再試行が成功した場合は保存しない。RPC拒否は構造化dataから必要な種類だけを引き継ぎ、生のエラー本文を画面へ転送しない。
+
+停止後と復元後にaccount/rateLimits/readを1回呼び、手動確認でも再取得する。ordinaryUsageAllowed:trueと明示的な制限の有無で回復を確認し、使用率・時刻経過だけでは推測しない。複数bucketを確認し、画面は最大20枠まで表示する。次の予定は使用率100%以上の枠の最も遅い既知時刻、未知時刻が含まれる場合は不明とする。確認タイムアウトは10秒、ページ操作は受付後すぐ返す。ポーリング・自動再開はしない。
+
+手動再開はpauseIdと世代を照合して最新の利用状況を再確認し、利用可能な場合だけ同じthreadへ固定の継続依頼を送る。モデル・思考量・承認モードは現在の選択を使い、元の継承権限を保持する。送信IDの重複は既存受付枠で防ぎ、古い停止情報や終了後に遅れた応答から送信しない。通常の明示的な文章送信と新しいチャットでは停止情報を解除する。
 
 turn/start前に参照とinFlight:trueの保存完了を待ち、完了通知後にfalseを直列保存する。保存失敗では送信を止め、自動再送しない。終了中は保存待ちと所有プロセスの終了を並行して行う。復元時は保存したcwd・開始オプション・元の継承権限を使い、操作指示オンなら現在の起動元instanceIdで指示を更新する。別CODEX_HOME・未知版・履歴消失・未対応API・活動中の会話では勝手に別会話へ切り替えない。
 

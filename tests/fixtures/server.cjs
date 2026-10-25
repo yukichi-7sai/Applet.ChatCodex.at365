@@ -9,6 +9,13 @@ let thread = 0, turn = 0, current, timer, waiting;
 thread = saved.thread; turn = saved.turn;
 const send = message => process.stdout.write(JSON.stringify(message) + '\n');
 const notify = (method, params) => send({ method, params });
+function failTurn(codexErrorInfo, completionInfo = true) {
+  const error = { message: 'Fixture failure', codexErrorInfo };
+  const record = saved.threads[current.thread]?.turns.at(-1);
+  if (record) { record.status = 'failed'; record.error = error; persist(); }
+  notify('error', { threadId: current.thread, turnId: current.turn, error, willRetry: false });
+  notify('turn/completed', { threadId: current.thread, turn: { id: current.turn, status: 'failed', error: completionInfo ? error : { message: error.message } } }); current = null;
+}
 function finish(text) {
   if (!current) return;
   const record = saved.threads[current.thread]?.turns.at(-1);
@@ -30,6 +37,11 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   if (msg.method === 'initialize') result = { userAgent: 'fixture' };
   else if (msg.method === 'initialized') return;
   else if (msg.method === 'account/read') result = { account: { type: 'chatgpt' }, requiresOpenaiAuth: true };
+  else if (msg.method === 'account/rateLimits/read') {
+    if (stateFile && fs.existsSync(stateFile)) saved.usage = JSON.parse(fs.readFileSync(stateFile, 'utf8')).usage;
+    if (saved.usage?.fixtureError) return send({ id: msg.id, error: { code: -32601, message: 'Fixture unavailable' } });
+    result = saved.usage || { ordinaryUsageAllowed: true, rateLimits: { limitId: 'codex', primary: { usedPercent: 10, resetsAt: Math.floor(Date.now() / 1000) + 3600 } } };
+  }
   else if (msg.method === 'model/list') result = msg.params.cursor
     ? { data: [{ model: 'fixture-simple', id: 'simple-id', displayName: 'Fixture Simple', defaultReasoningEffort: '', supportedReasoningEfforts: [] }], nextCursor: null }
     : { data: [{ model: 'fixture-fast', id: 'fast-id', displayName: 'Fixture Fast', isDefault: true, defaultReasoningEffort: 'low',
@@ -48,6 +60,9 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   }
   else if (msg.method === 'turn/start') {
     const text = msg.params.input[0].text;
+    if (text.includes('RPC利用制限')) {
+      send({ id: msg.id, error: { code: -32600, message: 'Untrusted raw fixture message', data: { codexErrorInfo: 'usageLimitExceeded', apiKey: 'fixture-limit-secret' } } }); return;
+    }
     if (text.includes('制限拒否') && msg.params.approvalPolicy === 'never') {
       send({ id: msg.id, error: { code: -32602, message: 'Fixture policy does not allow this mode.' } }); return;
     }
@@ -55,7 +70,15 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     saved.threads[current.thread]?.turns.push({ id: current.turn, status: 'inProgress', items: [{ type: 'userMessage', content: [{ type: 'text', text }] }] }); persist();
     send({ id: msg.id, result: { turn: { id: current.turn, status: 'inProgress' } } });
     notify('turn/started', { threadId: current.thread, turn: { id: current.turn, status: 'inProgress' } });
-    if (text.includes('ログ大量')) {
+    if (text.includes('利用枠制限') || text.includes('一時制限')) {
+      saved.usage = { ordinaryUsageAllowed: false, rateLimits: { limitId: 'codex', rateLimitReachedType: 'rate_limit_reached',
+        primary: { usedPercent: 100, resetsAt: text.includes('時刻不明') ? null : Math.floor(Date.now() / 1000) + 3600, windowDurationMins: 300 } } }; persist();
+      timer = setTimeout(() => failTurn(text.includes('一時制限') ? { httpConnectionFailed: { httpStatusCode: 429 } } : 'usageLimitExceeded', !text.includes('終了情報なし')), 30);
+    } else if (text.includes('再試行から回復')) {
+      notify('error', { threadId: current.thread, turnId: current.turn, error: { codexErrorInfo: 'rateLimitExceeded' }, willRetry: true });
+      timer = setTimeout(() => finish('再試行して回復しました。'), 30);
+    } else if (text.includes('通常の失敗')) timer = setTimeout(() => failTurn('internalServerError'), 30);
+    else if (text.includes('ログ大量')) {
       for (let n = 0; n < 230; n++) {
         const item = { id: 'storm-' + turn + '-' + n, type: 'mcpToolCall', server: 'fixture', tool: 'log-storm-' + n, arguments: { n }, status: 'inProgress' };
         notify('item/started', { threadId: current.thread, turnId: current.turn, item });

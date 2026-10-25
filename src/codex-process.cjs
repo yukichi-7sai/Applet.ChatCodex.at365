@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { EventEmitter } = require('node:events');
+const { limitReason } = require('./usage.cjs');
 
 function resolveCodex(env = process.env, platform = process.platform) {
   const exists = file => { try { return fs.statSync(file).isFile(); } catch { return false; } };
@@ -112,6 +113,8 @@ class CodexProcess extends EventEmitter {
         if (msg.error) {
           const error = Error('Codexの要求に失敗しました（' + pending.method + '）。');
           error.code = msg.error.code;
+          const kind = limitReason(msg.error.data) || limitReason(msg.error.data?.error);
+          if (kind) error.codexErrorInfo = kind === 'usage' ? 'usageLimitExceeded' : 'rateLimitExceeded';
           pending.reject(error);
         } else pending.resolve(msg.result);
       }

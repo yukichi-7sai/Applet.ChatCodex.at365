@@ -20,6 +20,17 @@
     <div id="notice" data-testid="notice" role="alert" hidden></div>
     <p id="settings-note" data-testid="settings-note" role="status" hidden>開始時の設定が変更されています。新しいチャットから適用します。</p>
     <p id="session-note" data-testid="session-note" role="status" hidden></p>
+    <section id="usage-panel" data-testid="usage-panel" aria-labelledby="usage-title" hidden>
+      <h2 id="usage-title"></h2>
+      <p id="usage-status" data-testid="usage-status" role="status"></p>
+      <p id="usage-reset" data-testid="usage-reset"></p>
+      <details id="usage-details" hidden><summary>利用状況の詳細</summary><ul id="usage-windows"></ul></details>
+      <p id="usage-checked"></p>
+      <div class="usage-actions">
+        <button id="usage-check" data-testid="usage-check" type="button">利用状況を確認</button>
+        <button id="usage-resume" data-testid="usage-resume" type="button">作業を再開</button>
+      </div>
+    </section>
     <section id="conversation" data-testid="conversation" aria-label="会話" tabindex="0">
       <p id="empty">Codexに相談する内容を入力してください。</p>
       <p id="omitted" hidden>古いメッセージの表示を省略しています。</p>

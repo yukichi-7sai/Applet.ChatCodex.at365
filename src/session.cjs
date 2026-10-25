@@ -3,6 +3,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { createHash } = require('node:crypto');
 const { threadDefaults } = require('./approval-modes.cjs');
+const { validPause } = require('./usage.cjs');
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 function scopeFor(env = process.env) {
   const key = Object.keys(env).find(key => key.toUpperCase() === 'CODEX_HOME');
@@ -19,6 +20,7 @@ function validateSession(value) {
       typeof value.options.sendOperationInstructions !== 'boolean' || !['inherit', 'include', 'exclude'].includes(value.options.memoryMode) ||
       !object(value.defaults)) throw Error('保存した会話の情報に対応していません。「新しいチャット」で開始し直せます。');
   threadDefaults({ ...value.defaults, sandbox: value.defaults.sandboxPolicy });
+  if (value.pause != null && !validPause(value.pause)) throw Error('保存した停止情報に対応していません。');
   return structuredClone(value);
 }
 class SessionStore {

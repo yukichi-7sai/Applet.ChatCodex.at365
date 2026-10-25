@@ -5,6 +5,7 @@ const { modes, validMode, threadDefaults, turnPolicy } = require('./approval-mod
 const { normalizeSettings, startupOptions, threadConfig } = require('./chat-settings.cjs');
 const { format, wireView } = require('./diagnostics.cjs');
 const { SessionStore, scopeFor, readHistory } = require('./session.cjs');
+const { continuation, limitReason, usageSnapshot } = require('./usage.cjs');
 const busy = new Set(['connecting', 'running', 'awaitingInput', 'stopping', 'saving']);
 const textLimit = 32768;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -42,6 +43,7 @@ class Chat {
     this.accepted = new Map();
     this.closed = false;
     this.saving = false;
+    this.pause = null; this.usage = null; this.usageOperation = null;
     this.settings = normalizeSettings(settings);
     this.resetDiagnostics();
   }
@@ -140,6 +142,7 @@ class Chat {
     const result = {
       generation: this.generation, reset, state: this.state, detail: this.detail,
       sessionNotice: this.sessionNotice || '', canStartNew: this.state === 'error',
+      usage: this.pause ? { pauseId: this.pause.id, kind: this.pause.kind, canContinue: this.pause.canContinue, ...(this.usage || { status: 'unknown', windows: [], nextReset: null }), checking: !!this.usageOperation } : null,
       displayMode: this.settings.displayMode,
       wireLogEnabled: this.settings.wireLogEnabled,
       diagnosticsOmitted: { detail: this.diagnostics.detail.omitted, trace: this.diagnostics.trace.omitted },
@@ -173,6 +176,7 @@ class Chat {
     this.threadOptions = null; this.threadContext = null; this.resetDiagnostics();
     this.threadId = null; this.threadDefaults = null; this.run = null; this.omitted = false; this.models = [];
     this.session = null; this.sessionNotice = ''; this.preferenceWarning = '';
+    this.pause = null; this.usage = null; this.usageOperation = null;
     this.state = 'connecting'; this.detail = 'Codexに接続しています。'; this.touch();
     void this.connectAsync(epoch);
     return { accepted: true };
@@ -239,6 +243,7 @@ class Chat {
       this.state = 'idle';
       this.detail = this.preferenceWarning || (this.validSelection() ? '' : '利用できるモデルと思考量を選んでください。');
       this.touch();
+      if (this.pause) this.checkUsage(this.generation);
     } catch (error) {
       await client?.close();
       if (!this.closed && epoch === this.generation) {
@@ -271,6 +276,7 @@ class Chat {
     if (this.closed || epoch !== this.generation) return;
     this.threadId = session.threadId; this.threadDefaults = session.defaults; this.threadOptions = session.options;
     this.session = session;
+    this.pause = session.pause || null;
     this.threadContext = { operationInstructions: developerInstructions || 'Appletの操作指示は送信していません。', memoryMode: session.options.memoryMode,
       instructionSources: response.instructionSources || [], note: '保存した会話を再開しました。Codex内部の指示全文・メモリ本文は取得していません。' };
     this.diagnostic('detail', '会話の復元', { ...this.threadContext, cwd: session.cwd, ...session.defaults });
@@ -288,6 +294,48 @@ class Chat {
       : ['failed', 'interrupted'].includes(lastStatus)
         ? '最後のチャットを復元しました。前回の処理は停止または失敗しています。操作結果を確認してから続きを送信してください。'
         : '最後のチャットを復元しました。そのまま続きを送信できます。';
+    if (this.pause) this.sessionNotice = '最後のチャットを復元しました。利用制限で停止した作業があります。';
+  }
+  checkUsage(generation) {
+    this.assertGeneration(generation);
+    if (this.usageOperation) return { accepted: true };
+    if (this.state !== 'idle' || this.saving || !this.pause) throw Error('利用制限で停止した会話の待機中に確認してください。');
+    this.startUsageCheck(generation);
+    return { accepted: true };
+  }
+  resumeWork(generation, requestId, pauseId) {
+    this.assertGeneration(generation);
+    if (typeof requestId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(requestId)) throw Error('送信IDが不正です。');
+    const fingerprint = createHash('sha256').update(continuation).digest('hex');
+    if (this.accepted.get(requestId) === fingerprint) return { accepted: true };
+    if (this.accepted.has(requestId)) throw Error('同じ送信IDを別の操作には使えません。');
+    if (pauseId !== this.pause?.id) throw Error('停止した作業が切り替わりました。表示を確認してください。');
+    if (this.usageOperation?.requestId === requestId) return { accepted: true };
+    if (this.state !== 'idle' || this.saving || this.usageOperation || !this.pause?.canContinue || !this.threadId || !this.validSelection())
+      throw Error('接続・モデル・停止した会話を確認してください。');
+    this.startUsageCheck(generation, requestId);
+    return { accepted: true };
+  }
+  startUsageCheck(generation, requestId) {
+    const operation = { generation, pauseId: this.pause.id, requestId };
+    this.usageOperation = operation; this.touch();
+    void this.queryUsage(operation);
+  }
+  async queryUsage(operation) {
+    const current = () => !this.closed && operation === this.usageOperation && operation.generation === this.generation && operation.pauseId === this.pause?.id && this.state === 'idle';
+    try {
+      const response = await this.client.request('account/rateLimits/read', {}, 10000);
+      if (current()) this.usage = usageSnapshot(response);
+    } catch {
+      if (current()) this.usage = { status: 'unavailable', windows: [], nextReset: null };
+    }
+    if (!current()) { if (this.usageOperation === operation) { this.usageOperation = null; this.touch(); } return; }
+    this.usageOperation = null;
+    if (operation.requestId && this.usage.status === 'available') {
+      try { this.send(operation.generation, operation.requestId, continuation); }
+      catch { this.usage.note = '再開できませんでした。接続とモデルの選択を確認してください。'; }
+    }
+    this.touch();
   }
   defaultEffort(model) { return model.efforts.includes(model.defaultEffort) ? model.defaultEffort : ''; }
   validSelection() {
@@ -296,7 +344,7 @@ class Chat {
   }
   async select(generation, model, effort) {
     this.assertGeneration(generation);
-    if (this.state !== 'idle' || this.saving) throw Error('待機中にモデルと思考量を選んでください。');
+    if (this.state !== 'idle' || this.saving || this.usageOperation) throw Error('待機中にモデルと思考量を選んでください。');
     const definition = this.models.find(item => item.model === model);
     if (!definition || (definition.efforts.length ? !definition.efforts.includes(effort) : effort !== ''))
       throw Error('このモデルで利用できる思考量を選んでください。');
@@ -311,7 +359,7 @@ class Chat {
   }
   async selectApproval(generation, mode) {
     this.assertGeneration(generation);
-    if (this.state !== 'idle' || this.saving) throw Error('待機中に承認モードを選んでください。');
+    if (this.state !== 'idle' || this.saving || this.usageOperation) throw Error('待機中に承認モードを選んでください。');
     if (!validMode(mode)) throw Error('承認モードが不正です。');
     this.saving = true; this.touch();
     try {
@@ -328,10 +376,13 @@ class Chat {
     const fingerprint = createHash('sha256').update(text).digest('hex');
     const prior = this.accepted.get(requestId);
     if (prior) { if (prior !== fingerprint) throw Error('同じ送信IDを別の文章には使えません。'); return { accepted: true }; }
-    if (this.state !== 'idle' || this.saving || !this.validSelection()) throw Error('接続とモデル・思考量の選択を確認してください。');
+    if (this.state !== 'idle' || this.saving || this.usageOperation || !this.validSelection()) throw Error('接続とモデル・思考量の選択を確認してください。');
     this.accepted.set(requestId, fingerprint);
     if (this.accepted.size > 128) this.accepted.delete(this.accepted.keys().next().value);
     this.entry('user', text);
+    if (this.pause && this.sessionNotice) this.sessionNotice = '最後のチャットを復元しました。';
+    this.pause = null; this.usage = null;
+    if (this.session) delete this.session.pause;
     this.state = 'running'; this.detail = '応答を生成しています。';
     this.items = new Map();
     const run = { generation, canceled: false, interrupted: false, selection: { ...this.selection }, approvalMode: this.approvalMode };
@@ -383,8 +434,9 @@ class Chat {
       if (this.run !== run) return;
       if (error.message?.startsWith('保存領域')) { this.disconnected(error.message); return; }
       if (error.code !== undefined || error.message?.startsWith('Codexの承認設定')) {
-        await this.finish('failed');
+        await this.finish('failed', error);
         if (this.closed || this.state === 'error') return;
+        if (this.pause) return;
         this.detail = error.message?.startsWith('Codexの承認設定') ? error.message
           : 'Codexが送信を受け付けませんでした。承認モード・開始時の設定とCodex側の制限を確認してください。自動再送していません。';
         this.touch();
@@ -392,6 +444,13 @@ class Chat {
     }
   }
   notification({ method, params: p = {} }) {
+    if (method === 'account/rateLimits/updated') {
+      if (this.pause && !this.usageOperation) {
+        try { this.usage = usageSnapshot(p); } catch { this.usage = { status: 'unknown', windows: [], nextReset: null }; }
+        this.touch();
+      }
+      return;
+    }
     if (p.threadId && p.threadId !== this.threadId) return;
     if (method === 'serverRequest/resolved') {
       for (const [id, request] of this.requests) if (request.wireId === p.requestId) this.requests.delete(id);
@@ -403,7 +462,7 @@ class Chat {
     if (eventTurnId && this.run.turnId && eventTurnId !== this.run.turnId) return;
     if (['item/started', 'item/completed'].includes(method) && p.item && !['agentMessage', 'reasoning', 'userMessage'].includes(p.item.type))
       this.diagnostic('detail', (method === 'item/started' ? '開始' : '完了') + ' · ' + p.item.type, p.item);
-    if (method === 'error') this.diagnostic('detail', 'Codexのエラー', p.error || p);
+    if (method === 'error') { this.run.limit = limitReason(p.error); this.diagnostic('detail', 'Codexのエラー', p.error || p); }
     if (method === 'turn/started') {
       if (p.turn?.id) this.run.turnId = p.turn.id;
       if (this.run.canceled) this.interrupt(this.run);
@@ -423,11 +482,17 @@ class Chat {
       this.touch();
     } else if (method === 'item/started' && p.item?.type === 'mcpToolCall') {
       this.detail = 'MCPの操作を実行しています。'; this.touch();
-    } else if (method === 'turn/completed') this.finish(p.turn?.status || 'completed');
+    } else if (method === 'turn/completed') this.finish(p.turn?.status || 'completed', p.turn?.error);
     else if (method === 'error') { this.detail = 'Codexでエラーが発生しました。'; this.touch(); }
   }
-  async finish(status) {
+  async finish(status, error) {
     if (!this.run) return;
+    const kind = status === 'failed' ? error?.codexErrorInfo != null ? limitReason(error) : this.run.limit : null;
+    if (kind) {
+      this.pause = { id: randomUUID(), kind, stoppedAt: Date.now(), canContinue: !!this.run.turnId };
+      this.usage = null;
+      if (this.session) this.session.pause = structuredClone(this.pause);
+    }
     clearTimeout(this.stopTimer);
     for (const entry of this.entries) delete entry.active;
     this.run = null; this.requests.clear(); this.state = 'saving'; this.touch();
@@ -440,10 +505,12 @@ class Chat {
     }
     if (this.closed || generation !== this.generation) return;
     this.state = 'idle';
-    this.detail = status === 'interrupted' ? '停止しました。送信済みの操作は取り消されない場合があります。'
+    this.detail = this.pause ? this.pause.kind === 'usage' ? 'Codexの利用制限のため停止しました。' : 'Codexの一時的な送信制限のため停止しました。'
+      : status === 'interrupted' ? '停止しました。送信済みの操作は取り消されない場合があります。'
       : status === 'failed' ? 'Codexの処理に失敗しました。結果を確認してください。' : '';
     if (status === 'failed') Promise.resolve(this.failed(this.detail)).catch(() => {});
     this.trim(); this.touch();
+    if (this.pause) this.checkUsage(this.generation);
   }
   cancelRequests() {
     for (const request of this.requests.values()) {
@@ -470,7 +537,7 @@ class Chat {
   }
   async newChat(generation) {
     this.assertGeneration(generation);
-    if (!['idle', 'error'].includes(this.state) || this.saving) throw Error('待機中に新しいチャットを開始してください。');
+    if (!['idle', 'error'].includes(this.state) || this.saving || this.usageOperation) throw Error('待機中に新しいチャットを開始してください。');
     this.saving = true; this.touch();
     try { await this.sessions.save(null); this.assertGeneration(generation); }
     finally { this.saving = false; this.touch(); }
@@ -479,6 +546,7 @@ class Chat {
     this.threadOptions = null; this.threadContext = null; this.resetDiagnostics();
     this.threadId = null; this.threadDefaults = null; this.detail = ''; this.omitted = false; this.touch();
     this.session = null; this.sessionNotice = '';
+    this.pause = null; this.usage = null; this.usageOperation = null;
     if (reconnect) { this.state = 'disconnected'; this.connect(this.generation); }
     return { accepted: true };
   }
