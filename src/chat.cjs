@@ -7,6 +7,7 @@ const { format, wireView } = require('./diagnostics.cjs');
 const { SessionStore, scopeFor, readHistory, replyText, recoveryContinuation } = require('./session.cjs');
 const { continuation, limitReason, usageSnapshot } = require('./usage.cjs');
 const { continuation: contextContinuation, isContextLimit, handoffDraft } = require('./context-recovery.cjs');
+const { noteFields, hasNote } = require('./work-note.cjs');
 const busy = new Set(['connecting', 'running', 'awaitingInput', 'stopping', 'saving', 'compacting', 'checkingRecovery']);
 const textLimit = 32768;
 const replyLimit = 1024 * 1024;
@@ -49,6 +50,7 @@ class Chat {
     this.contextRecovery = null; this.compactAccepted = new Map(); this.nextCwd = null;
     this.canRestoreWithoutHistory = false; this.historyNotice = '';
     this.interruption = null; this.recoveryOperation = null;
+    this.nextWorkNote = null; this.noteAccepted = new Map();
     this.settings = normalizeSettings(settings);
     this.resetDiagnostics();
   }
@@ -158,6 +160,7 @@ class Chat {
       replyOmitted: this.entries.some(entry => entry.truncated),
       canRestoreWithoutHistory: this.state === 'error' && this.canRestoreWithoutHistory, historyNotice: this.historyNotice,
       interruption: this.interruption ? { ...this.interruption, checking: !!this.recoveryOperation } : null,
+      workNote: this.session?.workNote || this.nextWorkNote || null, noteThreadId: this.session?.threadId || '',
       displayMode: this.settings.displayMode,
       wireLogEnabled: this.settings.wireLogEnabled,
       diagnosticsOmitted: { detail: this.diagnostics.detail.omitted, trace: this.diagnostics.trace.omitted },
@@ -196,6 +199,7 @@ class Chat {
     this.contextRecovery = null; this.compactAccepted.clear(); this.nextCwd = null;
     this.canRestoreWithoutHistory = false; this.historyNotice = '';
     this.interruption = null; this.recoveryOperation = null;
+    this.nextWorkNote = null; this.noteAccepted.clear();
     this.state = 'connecting'; this.detail = 'Codexに接続しています。'; this.touch();
     void this.connectAsync(epoch, withoutHistory);
     return { accepted: true };
@@ -427,9 +431,39 @@ class Chat {
   async handoff(generation, recoveryId) {
     this.assertGeneration(generation);
     if (this.contextRecovery?.id !== recoveryId || this.state !== 'idle' || this.saving || this.usageOperation) throw Error('停止した会話の待機中に引き継いでください。');
-    const cwd = this.session?.cwd || process.cwd(), draft = handoffDraft(this.entries, cwd);
+    return this.prepareHandoff(generation);
+  }
+  async saveNote(generation, threadId, noteId, requestId, text) {
+    this.assertGeneration(generation);
+    if (typeof requestId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(requestId)) throw Error('保存IDが不正です。');
+    let fields;
+    try { if (typeof text !== 'string' || Buffer.byteLength(text) > 32768) throw Error(); fields = noteFields(JSON.parse(text)); }
+    catch { throw Error('作業メモの各欄を短くしてください。各欄は日本語で約680文字まで保存できます。'); }
+    const fingerprint = createHash('sha256').update(JSON.stringify([threadId, noteId, fields])).digest('hex');
+    if (this.noteAccepted.get(requestId) === fingerprint) return { accepted: true };
+    if (this.noteAccepted.has(requestId)) throw Error('同じ保存IDを別のメモには使えません。');
+    if (this.state !== 'idle' || this.saving || this.usageOperation || !this.session || this.session.threadId !== threadId || (this.session.workNote?.id || '') !== noteId)
+      throw Error('会話の待機中に、最新の作業メモを確認して保存してください。');
+    const session = structuredClone(this.session);
+    session.workNote = { id: randomUUID(), ...fields, updatedAt: Date.now() };
+    this.saving = true; this.touch();
+    try {
+      await this.sessions.save(session); this.assertGeneration(generation);
+      this.session = session; this.noteAccepted.set(requestId, fingerprint);
+      if (this.noteAccepted.size > 128) this.noteAccepted.delete(this.noteAccepted.keys().next().value);
+      return { accepted: true };
+    } finally { this.saving = false; this.touch(); }
+  }
+  async handoffNote(generation, threadId, noteId) {
+    this.assertGeneration(generation);
+    if (this.state !== 'idle' || this.saving || this.usageOperation || !this.session || this.session.threadId !== threadId || this.session.workNote?.id !== noteId || !hasNote(this.session.workNote))
+      throw Error('会話の待機中に、保存済みの作業メモを確認して引き継いでください。');
+    return this.prepareHandoff(generation);
+  }
+  async prepareHandoff(generation) {
+    const cwd = this.session?.cwd || process.cwd(), note = structuredClone(this.session?.workNote || null), draft = handoffDraft(this.entries, cwd, note);
     await this.newChat(generation, true);
-    this.nextCwd = cwd; this.detail = '引き継ぎ下書きを確認・補足して送信してください。';
+    this.nextCwd = cwd; this.nextWorkNote = note; this.detail = '引き継ぎ下書きを確認・補足して送信してください。';
     this.sessionNotice = '送信するまでは、元の会話を再開先として保持します。'; this.touch();
     return { draft };
   }
@@ -554,7 +588,9 @@ class Chat {
         if (result.thread.ephemeral !== true) this.session = {
           schemaVersion: 1, threadId: this.threadId, cwd: result.cwd || start.cwd, scope: scopeFor(this.client.env),
           options: structuredClone(this.threadOptions), defaults: structuredClone(this.threadDefaults), inFlight: false,
+          ...(this.nextWorkNote ? { workNote: structuredClone(this.nextWorkNote) } : {}),
         };
+        this.nextWorkNote = null;
       }
       if (run.canceled) { this.finish('interrupted'); return; }
       if (this.session) {
@@ -714,6 +750,7 @@ class Chat {
     this.contextRecovery = null; this.compactAccepted.clear(); this.nextCwd = null;
     this.canRestoreWithoutHistory = false; this.historyNotice = '';
     this.interruption = null; this.recoveryOperation = null;
+    this.nextWorkNote = null; this.noteAccepted.clear();
     if (reconnect) { this.state = 'disconnected'; this.connect(this.generation); }
     return { accepted: true };
   }

@@ -10,7 +10,8 @@ const contextMode = process.argv.includes('--context');
 const outputMode = process.argv.includes('--output');
 const historyMode = process.argv.includes('--history');
 const recoverMode = process.argv.includes('--recover');
-const root = path.resolve(__dirname, '..'), folder = path.join(root, '.artifacts', (recoverMode ? 'recover-probe-' : historyMode ? 'history-probe-' : outputMode ? 'output-probe-' : contextMode ? 'context-probe-' : usageMode ? 'usage-probe-' : 'resume-probe-') + Date.now());
+const noteMode = process.argv.includes('--note');
+const root = path.resolve(__dirname, '..'), folder = path.join(root, '.artifacts', (noteMode ? 'note-probe-' : recoverMode ? 'recover-probe-' : historyMode ? 'history-probe-' : outputMode ? 'output-probe-' : contextMode ? 'context-probe-' : usageMode ? 'usage-probe-' : 'resume-probe-') + Date.now());
 const home = path.join(folder, 'codex-home'), workspace = path.join(folder, 'workspace'), storageFile = path.join(folder, 'storage.json');
 fs.mkdirSync(home, { recursive: true }); fs.mkdirSync(workspace, { recursive: true });
 const command = resolveCodex(), calls = [], requests = [];
@@ -98,6 +99,7 @@ const result = { ok: false, isolatedCodexHome: true, localMockProvider: true, re
       assert.ok(first.entries.filter(entry => entry.role === 'assistant').reduce((sum, entry) => sum + entry.text.length, 0) <= 1024 * 1024);
       result.longReplyContinuedWithoutInterrupt = true;
     }
+    if (noteMode) await first.saveNote(first.generation, first.threadId, '', 'save-note', JSON.stringify({ goal: 'ISOLATED_NOTE_GOAL', completed: 'ISOLATED_NOTE_DONE', pending: 'ISOLATED_NOTE_NEXT', uncertain: 'ISOLATED_NOTE_UNKNOWN' }));
     await first.close();
     if (recoverMode) { const saved = await storage.get('lastSession'); saved.inFlight = true; await storage.set('lastSession', saved); }
     calls.length = 0;
@@ -116,6 +118,21 @@ const result = { ok: false, isolatedCodexHome: true, localMockProvider: true, re
     assert.equal(requests.length, 1); assert.equal(calls.some(call => call.method === 'turn/start'), false);
     if (outputMode) { assert.equal(second.read(0, 0).replyOmitted, true); result.longReplyRestoredWithinLimit = true; }
     await second.selectApproval(second.generation, 'inherit');
+    if (noteMode) {
+      const saved = await storage.get('lastSession'), count = calls.length;
+      assert.equal(second.session.workNote.goal, 'ISOLATED_NOTE_GOAL');
+      const { draft } = await second.handoffNote(second.generation, threadId, second.session.workNote.id);
+      assert.equal(calls.length, count); assert.deepEqual(await storage.get('lastSession'), saved); assert.equal(requests.length, 1);
+      await send(second, 'handoff-send', draft);
+      assert.notEqual(second.threadId, threadId); assert.equal(second.session.cwd, saved.cwd); assert.deepEqual(second.session.workNote, saved.workNote);
+      for (const text of ['ISOLATED_NOTE_GOAL', 'ISOLATED_NOTE_DONE', 'ISOLATED_NOTE_NEXT', 'ISOLATED_NOTE_UNKNOWN']) assert.ok(JSON.stringify(requests.at(-1).input).includes(text));
+      assert.equal(requests.length, 2); assert.equal(calls.filter(call => call.method === 'turn/start').length, 1);
+      assert.equal((await storage.get('lastSession')).threadId, second.threadId);
+      const old = await second.client.request('thread/read', { threadId }); assert.equal(old.thread.id, threadId);
+      Object.assign(result, { ok: true, noteRestored: true, noRequestUntilExplicitSend: true, noteCarriedToNewThread: true, sameWorkspace: true, oldNativeThreadRetained: true, providerRequests: requests.length,
+        codexVersion: execFileSync(command.file, [...command.args, '--version'], { encoding: 'utf8', windowsHide: true }).trim(), codexSha256: createHash('sha256').update(fs.readFileSync(command.file)).digest('hex') });
+      return;
+    }
     if (usageMode) {
       recovered = true; second.resumeWork(second.generation, 'continued', second.pause.id);
       await until(() => !second.pause && second.state === 'idle' && !second.usageOperation);

@@ -58,6 +58,21 @@
       <div id="messages"></div>
       <div id="requests" data-testid="requests"></div>
     </section>
+    <details id="work-note" data-testid="work-note">
+      <summary>作業メモ</summary>
+      <p>確認した内容を手で保存します。保存だけではCodexへ送信しません。各欄は日本語で約680文字までです。</p>
+      <div class="note-fields">
+        <label for="note-goal">目的<textarea id="note-goal" data-testid="note-goal" rows="2" maxlength="2048"></textarea></label>
+        <label for="note-completed">完了済み（確認済み）<textarea id="note-completed" data-testid="note-completed" rows="2" maxlength="2048"></textarea></label>
+        <label for="note-pending">未完了<textarea id="note-pending" data-testid="note-pending" rows="2" maxlength="2048"></textarea></label>
+        <label for="note-uncertain">結果不明・確認待ち<textarea id="note-uncertain" data-testid="note-uncertain" rows="2" maxlength="2048"></textarea></label>
+      </div>
+      <p id="note-status" data-testid="note-status" role="status"></p>
+      <div class="usage-actions">
+        <button id="note-save" data-testid="note-save" type="button">メモを保存</button>
+        <button id="note-handoff" data-testid="note-handoff" type="button">メモを使って新しいチャットへ</button>
+      </div>
+    </details>
     <form id="composer">
       <div class="composer-shell">
         <label class="sr-only" for="input">メッセージ</label>

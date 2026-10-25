@@ -5,6 +5,7 @@ const { createHash } = require('node:crypto');
 const { threadDefaults } = require('./approval-modes.cjs');
 const { validPause } = require('./usage.cjs');
 const { validRecovery } = require('./context-recovery.cjs');
+const { validNote } = require('./work-note.cjs');
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const recoveryContinuation = '前回の処理は切断または中断により、実行結果が不明な可能性があります。まず、この会話の履歴と現在のファイル・設定・処理状況を必要な範囲で確認し、完了済み・未完了・結果不明を区別してください。元の依頼やコマンド・設定変更・インストールなどをそのまま再実行せず、完了を確認できた操作は繰り返さないでください。結果不明の変更は再実行せず、その内容を説明して必要なら確認を求めてください。状況を確認できたら、未完了と確認できる作業だけを続けてください。元の依頼が見つからない、または現在の状態を確認できないときは、推測して実行せず必要な情報を尋ねてください。';
 function scopeFor(env = process.env) {
@@ -24,6 +25,7 @@ function validateSession(value) {
   threadDefaults({ ...value.defaults, sandbox: value.defaults.sandboxPolicy });
   if (value.pause != null && !validPause(value.pause)) throw Error('保存した停止情報に対応していません。');
   if (value.contextRecovery != null && !validRecovery(value.contextRecovery)) throw Error('保存した会話の復旧情報に対応していません。');
+  if (value.workNote != null && !validNote(value.workNote)) throw Error('保存した作業メモに対応していません。');
   return structuredClone(value);
 }
 class SessionStore {

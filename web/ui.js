@@ -9,6 +9,26 @@ const approvalIcons = {
 };
 let generation = 0, after = 0, state, draftSelection, performing = false, reading = false, readAgain = false, autoConnected = false, composing = false;
 const entries = new Map(), bubbles = new Map(), cards = new Map();
+const noteFields = ['goal', 'completed', 'pending', 'uncertain'];
+let noteKey, noteVersion, noteDirty = false;
+function renderNote(idle) {
+  if (['connecting', 'error', 'disconnected'].includes(state.state) && !state.noteThreadId) {
+    for (const key of noteFields) $('note-' + key).disabled = true;
+    $('note-save').disabled = true; $('note-handoff').disabled = true; return;
+  }
+  const key = state.noteThreadId || (state.workNote ? 'pending:' : 'new:') + generation;
+  if (key !== noteKey || !noteDirty && noteVersion !== state.workNote?.id) {
+    noteKey = key; noteVersion = state.workNote?.id; noteDirty = false;
+    for (const field of noteFields) $('note-' + field).value = state.workNote?.[field] || '';
+  }
+  const editable = idle && !!state.noteThreadId;
+  for (const field of noteFields) $('note-' + field).disabled = !editable;
+  $('note-save').disabled = !editable || !noteDirty;
+  $('note-handoff').disabled = !editable || noteDirty || !noteFields.some(field => state.workNote?.[field]?.trim());
+  $('note-status').textContent = noteDirty ? '未保存の変更があります。引き継ぐ前に保存してください。'
+    : !state.noteThreadId ? state.workNote ? '引き継ぎ下書きを入力欄で確認してください。最初の送信時にメモも引き継ぎます。' : '最初のメッセージを送信した後に保存できます。'
+    : state.workNote ? '保存済み：' + usageTime(state.workNote.updatedAt / 1000) : 'この会話の作業メモはまだ保存していません。';
+}
 const labels = { disconnected: '未接続', connecting: '接続中…', idle: '接続済み', running: '応答中…', awaitingInput: '返答を待っています', stopping: '停止中…', compacting: '会話を圧縮中…', checkingRecovery: '会話の状態を確認中…', saving: '会話を保存しています…', error: '接続を確認してください' };
 const call = (id, input = {}) => window.appletPage.call('actions.invoke', { id, input: { generation, ...input } });
 function notice(message = '') { $('notice').textContent = message; $('notice').hidden = !message; }
@@ -104,7 +124,7 @@ function renderContext(valid) {
   $('context-compact').disabled = !idle;
   $('context-continue').hidden = recovery.status !== 'ready';
   $('context-continue').disabled = !idle || !recovery.canContinue || !valid || !!draftSelection || !!state.usage;
-  $('context-handoff').disabled = !idle;
+  $('context-handoff').disabled = !idle || noteDirty;
   $('context-hint').hidden = recovery.status === 'compacting';
 }
 function renderControls() {
@@ -122,6 +142,7 @@ function renderControls() {
   for (const effort of model?.efforts || []) $('effort').append(option(effort, effortNames[effort] || effort));
   $('effort').value = selected.effort;
   const idle = state.state === 'idle' && !performing && !state.saving && !state.usage?.checking;
+  renderNote(idle);
   renderApproval(idle);
   $('model').disabled = !idle;
   $('effort').disabled = !idle || !model?.efforts.length;
@@ -306,6 +327,17 @@ $('context-continue').addEventListener('click', () => void perform(() => call('c
 $('context-handoff').addEventListener('click', () => void perform(async () => {
   const result = await call('chat.handoff', { recoveryId: state.contextRecovery?.id });
   $('input').value = result.draft; $('input').focus(); $('input').setSelectionRange(0, 0); $('input').scrollTop = 0;
+}));
+for (const field of noteFields) $('note-' + field).addEventListener('input', () => { noteDirty = true; renderControls(); });
+$('note-save').addEventListener('click', () => void perform(async () => {
+  const text = JSON.stringify(Object.fromEntries(noteFields.map(field => [field, $('note-' + field).value])));
+  await call('chat.note-save', { threadId: state.noteThreadId, noteId: state.workNote?.id || '', requestId: crypto.randomUUID(), text });
+  noteDirty = false; noteKey = undefined;
+}));
+$('note-handoff').addEventListener('click', () => void perform(async () => {
+  const result = await call('chat.note-handoff', { threadId: state.noteThreadId, noteId: state.workNote?.id || '' });
+  $('input').value = result.draft; $('input').focus(); $('input').setSelectionRange(0, 0); $('input').scrollTop = 0;
+  $('work-note').open = false;
 }));
 $('approval-menu').addEventListener('toggle', event => {
   const open = event.newState === 'open'; $('approval').setAttribute('aria-expanded', String(open));

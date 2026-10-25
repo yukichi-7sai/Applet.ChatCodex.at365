@@ -3,7 +3,7 @@
   "id": "at365.chatcodex",
   "name": "Applet.ChatCodex.at365",
   "displayName": "ChatCodex",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "minimumHostVersion": "0.86.13",
   "runtime": "node",
   "entry": "src/applet.cjs",
@@ -55,6 +55,8 @@
     { "id": "chat.context-continue", "parameters": { "generation": "number", "requestId": "string", "recoveryId": "string" } },
     { "id": "chat.handoff", "parameters": { "generation": "number", "recoveryId": "string" } },
     { "id": "chat.restore-light", "parameters": { "generation": "number" } },
-    { "id": "chat.recover", "parameters": { "generation": "number", "requestId": "string", "recoveryId": "string" } }
+    { "id": "chat.recover", "parameters": { "generation": "number", "requestId": "string", "recoveryId": "string" } },
+    { "id": "chat.note-save", "parameters": { "generation": "number", "threadId": "string", "noteId": "string", "requestId": "string", "text": "string" } },
+    { "id": "chat.note-handoff", "parameters": { "generation": "number", "threadId": "string", "noteId": "string" } }
   ]
 }

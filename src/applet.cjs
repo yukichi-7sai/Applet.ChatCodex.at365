@@ -39,6 +39,8 @@ function createApplet(options = {}) {
         case 'chat.compact': return chat.compact(input.generation, input.requestId, input.recoveryId);
         case 'chat.context-continue': return chat.continueContext(input.generation, input.requestId, input.recoveryId);
         case 'chat.handoff': return chat.handoff(input.generation, input.recoveryId);
+        case 'chat.note-save': return chat.saveNote(input.generation, input.threadId, input.noteId, input.requestId, input.text);
+        case 'chat.note-handoff': return chat.handoffNote(input.generation, input.threadId, input.noteId);
         default: throw Error('未対応のページ操作です。');
       }
     },
