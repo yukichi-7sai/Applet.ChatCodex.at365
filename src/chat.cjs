@@ -6,7 +6,8 @@ const { normalizeSettings, startupOptions, threadConfig } = require('./chat-sett
 const { format, wireView } = require('./diagnostics.cjs');
 const { SessionStore, scopeFor, readHistory } = require('./session.cjs');
 const { continuation, limitReason, usageSnapshot } = require('./usage.cjs');
-const busy = new Set(['connecting', 'running', 'awaitingInput', 'stopping', 'saving']);
+const { continuation: contextContinuation, isContextLimit, handoffDraft } = require('./context-recovery.cjs');
+const busy = new Set(['connecting', 'running', 'awaitingInput', 'stopping', 'saving', 'compacting']);
 const textLimit = 32768;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const short = (value, max = 4000) => typeof value === 'string' ? value.slice(0, max) : '';
@@ -44,6 +45,7 @@ class Chat {
     this.closed = false;
     this.saving = false;
     this.pause = null; this.usage = null; this.usageOperation = null;
+    this.contextRecovery = null; this.compactAccepted = new Map(); this.nextCwd = null;
     this.settings = normalizeSettings(settings);
     this.resetDiagnostics();
   }
@@ -143,6 +145,7 @@ class Chat {
       generation: this.generation, reset, state: this.state, detail: this.detail,
       sessionNotice: this.sessionNotice || '', canStartNew: this.state === 'error',
       usage: this.pause ? { pauseId: this.pause.id, kind: this.pause.kind, canContinue: this.pause.canContinue, ...(this.usage || { status: 'unknown', windows: [], nextReset: null }), checking: !!this.usageOperation } : null,
+      contextRecovery: this.contextRecovery,
       displayMode: this.settings.displayMode,
       wireLogEnabled: this.settings.wireLogEnabled,
       diagnosticsOmitted: { detail: this.diagnostics.detail.omitted, trace: this.diagnostics.trace.omitted },
@@ -177,6 +180,7 @@ class Chat {
     this.threadId = null; this.threadDefaults = null; this.run = null; this.omitted = false; this.models = [];
     this.session = null; this.sessionNotice = ''; this.preferenceWarning = '';
     this.pause = null; this.usage = null; this.usageOperation = null;
+    this.contextRecovery = null; this.compactAccepted.clear(); this.nextCwd = null;
     this.state = 'connecting'; this.detail = 'Codexに接続しています。'; this.touch();
     void this.connectAsync(epoch);
     return { accepted: true };
@@ -277,6 +281,8 @@ class Chat {
     this.threadId = session.threadId; this.threadDefaults = session.defaults; this.threadOptions = session.options;
     this.session = session;
     this.pause = session.pause || null;
+    this.contextRecovery = session.contextRecovery ? structuredClone(session.contextRecovery) : null;
+    if (this.contextRecovery?.status === 'compacting') this.contextRecovery.status = 'unknown';
     this.threadContext = { operationInstructions: developerInstructions || 'Appletの操作指示は送信していません。', memoryMode: session.options.memoryMode,
       instructionSources: response.instructionSources || [], note: '保存した会話を再開しました。Codex内部の指示全文・メモリ本文は取得していません。' };
     this.diagnostic('detail', '会話の復元', { ...this.threadContext, cwd: session.cwd, ...session.defaults });
@@ -295,6 +301,71 @@ class Chat {
         ? '最後のチャットを復元しました。前回の処理は停止または失敗しています。操作結果を確認してから続きを送信してください。'
         : '最後のチャットを復元しました。そのまま続きを送信できます。';
     if (this.pause) this.sessionNotice = '最後のチャットを復元しました。利用制限で停止した作業があります。';
+    else if (this.contextRecovery) this.sessionNotice = '最後のチャットを復元しました。長くなった会話の復旧状態を引き継いでいます。';
+  }
+  compact(generation, requestId, recoveryId) {
+    this.assertGeneration(generation);
+    if (typeof requestId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(requestId)) throw Error('送信IDが不正です。');
+    if (this.compactAccepted.has(requestId)) {
+      if (this.compactAccepted.get(requestId) !== recoveryId) throw Error('同じ送信IDを別の操作には使えません。');
+      return { accepted: true };
+    }
+    if (recoveryId !== this.contextRecovery?.id || this.contextRecovery.status === 'ready' || this.state !== 'idle' || this.saving || this.usageOperation || !this.threadId)
+      throw Error('停止した会話と接続状態を確認してください。');
+    this.compactAccepted.set(requestId, recoveryId);
+    if (this.compactAccepted.size > 128) this.compactAccepted.delete(this.compactAccepted.keys().next().value);
+    const run = { kind: 'compact', generation, canceled: false, interrupted: false, compacted: false };
+    this.run = run; this.state = 'compacting'; this.detail = 'Codexで会話を圧縮しています。'; this.touch();
+    void this.generateCompact(run);
+    return { accepted: true };
+  }
+  async generateCompact(run) {
+    try {
+      if (this.pause) {
+        let response;
+        try { response = await this.client.request('account/rateLimits/read', {}, 10000); }
+        catch {
+          if (!this.closed && this.run === run) { clearTimeout(this.stopTimer); this.usage = { status: 'unavailable', windows: [], nextReset: null }; this.run = null; this.state = 'idle'; this.touch(); }
+          return;
+        }
+        if (this.closed || this.run !== run) return;
+        this.usage = usageSnapshot(response);
+        if (this.usage.status !== 'available') { clearTimeout(this.stopTimer); this.run = null; this.state = 'idle'; this.detail = '利用状況を確認してから、会話の圧縮を再開してください。'; this.touch(); return; }
+        this.pause = null; if (this.session) delete this.session.pause;
+      }
+      this.contextRecovery.status = 'compacting';
+      if (this.session) {
+        this.session.contextRecovery = structuredClone(this.contextRecovery); this.session.inFlight = true;
+        await this.sessions.save(this.session);
+      }
+      if (this.closed || this.run !== run) return;
+      if (run.canceled) { await this.finish('interrupted'); return; }
+      this.compactTimer = setTimeout(() => { if (this.run === run) this.disconnected('会話の圧縮完了を確認できません。再接続して状態を確認してください。自動でやり直していません。'); }, 300000);
+      this.compactTimer.unref?.();
+      await this.client.request('thread/compact/start', { threadId: this.threadId });
+    } catch (error) {
+      if (this.closed || this.run !== run) return;
+      if (error.message?.startsWith('保存領域')) this.disconnected(error.message);
+      else if (error.code !== undefined) await this.finish('failed', error);
+      else this.disconnected('会話の圧縮結果を確認できません。再接続して状態を確認してください。自動でやり直していません。');
+    }
+  }
+  continueContext(generation, requestId, recoveryId) {
+    this.assertGeneration(generation);
+    const fingerprint = createHash('sha256').update(contextContinuation).digest('hex');
+    if (this.accepted.get(requestId) === fingerprint) return { accepted: true };
+    if (this.contextRecovery?.id !== recoveryId || this.contextRecovery.status !== 'ready' || !this.contextRecovery.canContinue || this.pause)
+      throw Error('会話の圧縮が完了したことと停止した作業を確認してください。');
+    return this.send(generation, requestId, contextContinuation);
+  }
+  async handoff(generation, recoveryId) {
+    this.assertGeneration(generation);
+    if (this.contextRecovery?.id !== recoveryId || this.state !== 'idle' || this.saving || this.usageOperation) throw Error('停止した会話の待機中に引き継いでください。');
+    const cwd = this.session?.cwd || process.cwd(), draft = handoffDraft(this.entries, cwd);
+    await this.newChat(generation, true);
+    this.nextCwd = cwd; this.detail = '引き継ぎ下書きを確認・補足して送信してください。';
+    this.sessionNotice = '送信するまでは、元の会話を再開先として保持します。'; this.touch();
+    return { draft };
   }
   checkUsage(generation) {
     this.assertGeneration(generation);
@@ -310,6 +381,7 @@ class Chat {
     if (this.accepted.get(requestId) === fingerprint) return { accepted: true };
     if (this.accepted.has(requestId)) throw Error('同じ送信IDを別の操作には使えません。');
     if (pauseId !== this.pause?.id) throw Error('停止した作業が切り替わりました。表示を確認してください。');
+    if (this.contextRecovery) throw Error('利用可能になったら、先に会話を圧縮してください。');
     if (this.usageOperation?.requestId === requestId) return { accepted: true };
     if (this.state !== 'idle' || this.saving || this.usageOperation || !this.pause?.canContinue || !this.threadId || !this.validSelection())
       throw Error('接続・モデル・停止した会話を確認してください。');
@@ -380,9 +452,11 @@ class Chat {
     this.accepted.set(requestId, fingerprint);
     if (this.accepted.size > 128) this.accepted.delete(this.accepted.keys().next().value);
     this.entry('user', text);
-    if (this.pause && this.sessionNotice) this.sessionNotice = '最後のチャットを復元しました。';
+    if ((this.pause || this.contextRecovery) && this.sessionNotice) this.sessionNotice = '最後のチャットを復元しました。';
     this.pause = null; this.usage = null;
     if (this.session) delete this.session.pause;
+    this.contextRecovery = null;
+    if (this.session) delete this.session.contextRecovery;
     this.state = 'running'; this.detail = '応答を生成しています。';
     this.items = new Map();
     const run = { generation, canceled: false, interrupted: false, selection: { ...this.selection }, approvalMode: this.approvalMode };
@@ -396,7 +470,7 @@ class Chat {
         this.threadOptions = startupOptions(this.settings);
         const developerInstructions = this.operationInstructions(this.threadOptions);
         const start = {
-          model: run.selection.model, cwd: process.cwd(), serviceName: 'appdock_chatcodex',
+          model: run.selection.model, cwd: this.nextCwd || process.cwd(), serviceName: 'appdock_chatcodex',
           ...threadConfig(this.threadOptions), ...(developerInstructions ? { developerInstructions } : {}),
         };
         this.threadContext = { operationInstructions: developerInstructions || 'Appletの操作指示は送信していません。', memoryMode: this.threadOptions.memoryMode,
@@ -409,6 +483,7 @@ class Chat {
         this.threadContext.instructionSources = Array.isArray(result.instructionSources) ? result.instructionSources : [];
         this.diagnostic('detail', 'Codexが返した開始時の情報', { instructionSources: this.threadContext.instructionSources, ...this.threadDefaults });
         this.threadId = result.thread.id;
+        this.nextCwd = null;
         if (result.thread.ephemeral !== true) this.session = {
           schemaVersion: 1, threadId: this.threadId, cwd: result.cwd || start.cwd, scope: scopeFor(this.client.env),
           options: structuredClone(this.threadOptions), defaults: structuredClone(this.threadDefaults), inFlight: false,
@@ -436,7 +511,7 @@ class Chat {
       if (error.code !== undefined || error.message?.startsWith('Codexの承認設定')) {
         await this.finish('failed', error);
         if (this.closed || this.state === 'error') return;
-        if (this.pause) return;
+        if (this.pause || this.contextRecovery) return;
         this.detail = error.message?.startsWith('Codexの承認設定') ? error.message
           : 'Codexが送信を受け付けませんでした。承認モード・開始時の設定とCodex側の制限を確認してください。自動再送していません。';
         this.touch();
@@ -458,14 +533,19 @@ class Chat {
       this.touch(); return;
     }
     if (!this.run) return;
+    if (this.run.kind === 'compact' && !this.run.turnId && method !== 'turn/started') return;
     const eventTurnId = p.turnId || p.turn?.id;
     if (eventTurnId && this.run.turnId && eventTurnId !== this.run.turnId) return;
     if (['item/started', 'item/completed'].includes(method) && p.item && !['agentMessage', 'reasoning', 'userMessage'].includes(p.item.type))
       this.diagnostic('detail', (method === 'item/started' ? '開始' : '完了') + ' · ' + p.item.type, p.item);
-    if (method === 'error') { this.run.limit = limitReason(p.error); this.diagnostic('detail', 'Codexのエラー', p.error || p); }
+    if (method === 'error') { this.run.limit = limitReason(p.error); this.run.contextLimit = isContextLimit(p.error); this.diagnostic('detail', 'Codexのエラー', p.error || p); }
     if (method === 'turn/started') {
       if (p.turn?.id) this.run.turnId = p.turn.id;
       if (this.run.canceled) this.interrupt(this.run);
+    } else if (method === 'item/completed' && p.item?.type === 'contextCompaction' && this.run.kind === 'compact') {
+      this.run.compacted = true; this.detail = '会話の圧縮結果を確認しています。'; this.touch();
+    } else if (this.run.kind === 'compact' && ['item/agentMessage/delta', 'item/completed'].includes(method)) {
+      // Compaction summaries are not ordinary assistant replies.
     } else if (method === 'item/agentMessage/delta') {
       if (typeof p.itemId === 'string' && typeof p.delta === 'string') this.append(p.itemId, p.delta);
     } else if (method === 'item/completed' && p.item?.type === 'agentMessage') {
@@ -487,6 +567,12 @@ class Chat {
   }
   async finish(status, error) {
     if (!this.run) return;
+    const compact = this.run.kind === 'compact', compacted = compact && status === 'completed' && this.run.compacted && !this.run.canceled;
+    const contextLimit = status === 'failed' && (error?.codexErrorInfo != null ? isContextLimit(error) : this.run.contextLimit);
+    if (compact) {
+      this.contextRecovery.status = compacted ? 'ready' : status === 'interrupted' ? 'needed' : 'failed';
+    } else if (contextLimit) this.contextRecovery = { id: randomUUID(), status: 'needed', stoppedAt: Date.now(), canContinue: !!this.run.turnId };
+    if (this.session && this.contextRecovery) this.session.contextRecovery = structuredClone(this.contextRecovery);
     const kind = status === 'failed' ? error?.codexErrorInfo != null ? limitReason(error) : this.run.limit : null;
     if (kind) {
       this.pause = { id: randomUUID(), kind, stoppedAt: Date.now(), canContinue: !!this.run.turnId };
@@ -494,6 +580,7 @@ class Chat {
       if (this.session) this.session.pause = structuredClone(this.pause);
     }
     clearTimeout(this.stopTimer);
+    clearTimeout(this.compactTimer);
     for (const entry of this.entries) delete entry.active;
     this.run = null; this.requests.clear(); this.state = 'saving'; this.touch();
     const generation = this.generation;
@@ -506,6 +593,8 @@ class Chat {
     if (this.closed || generation !== this.generation) return;
     this.state = 'idle';
     this.detail = this.pause ? this.pause.kind === 'usage' ? 'Codexの利用制限のため停止しました。' : 'Codexの一時的な送信制限のため停止しました。'
+      : this.contextRecovery ? this.contextRecovery.status === 'ready' ? '会話の圧縮が完了しました。作業を再開できます。'
+        : '会話の長さの上限で停止しています。圧縮または新しいチャットへの引き継ぎを選べます。'
       : status === 'interrupted' ? '停止しました。送信済みの操作は取り消されない場合があります。'
       : status === 'failed' ? 'Codexの処理に失敗しました。結果を確認してください。' : '';
     if (status === 'failed') Promise.resolve(this.failed(this.detail)).catch(() => {});
@@ -523,11 +612,17 @@ class Chat {
     if (!this.run) return { accepted: true };
     this.run.canceled = true; this.state = 'stopping'; this.detail = '停止しています。';
     this.cancelRequests(); this.interrupt(this.run); this.touch();
+    if (this.run?.kind === 'compact' && !this.run.turnId) {
+      const run = this.run;
+      this.stopTimer = setTimeout(() => { if (this.run === run) this.disconnected('圧縮の停止結果を確認できません。再接続して状態を確認してください。'); }, 15000);
+      this.stopTimer.unref?.();
+    }
     return { accepted: true };
   }
   interrupt(run) {
     if (!run.turnId || run.interrupted) return;
     run.interrupted = true;
+    clearTimeout(this.stopTimer);
     void this.client.request('turn/interrupt', { threadId: this.threadId, turnId: run.turnId }, 10000)
       .catch(() => { if (this.run === run) this.disconnected('停止の結果を確認できません。接続し直す前に操作結果を確認してください。'); });
     this.stopTimer = setTimeout(() => {
@@ -535,11 +630,11 @@ class Chat {
     }, 15000);
     this.stopTimer.unref?.();
   }
-  async newChat(generation) {
+  async newChat(generation, preservePrevious = false) {
     this.assertGeneration(generation);
     if (!['idle', 'error'].includes(this.state) || this.saving || this.usageOperation) throw Error('待機中に新しいチャットを開始してください。');
     this.saving = true; this.touch();
-    try { await this.sessions.save(null); this.assertGeneration(generation); }
+    try { if (!preservePrevious) await this.sessions.save(null); this.assertGeneration(generation); }
     finally { this.saving = false; this.touch(); }
     const reconnect = this.state === 'error';
     this.generation++; this.entries = []; this.items = new Map(); this.accepted.clear(); this.requests.clear();
@@ -547,6 +642,7 @@ class Chat {
     this.threadId = null; this.threadDefaults = null; this.detail = ''; this.omitted = false; this.touch();
     this.session = null; this.sessionNotice = '';
     this.pause = null; this.usage = null; this.usageOperation = null;
+    this.contextRecovery = null; this.compactAccepted.clear(); this.nextCwd = null;
     if (reconnect) { this.state = 'disconnected'; this.connect(this.generation); }
     return { accepted: true };
   }
@@ -554,6 +650,7 @@ class Chat {
     const alreadyFailed = this.state === 'error';
     this.cancelRequests();
     this.run = null;
+    if (this.contextRecovery?.status === 'compacting') this.contextRecovery.status = 'unknown';
     for (const entry of this.entries) delete entry.active;
     this.state = 'error'; this.detail = message; this.touch();
     if (!alreadyFailed) Promise.resolve(this.failed('Codexとの通信が終了しました。チャット画面で処理結果を確認してください。')).catch(() => {});
@@ -561,6 +658,7 @@ class Chat {
   }
   serverRequest(msg) {
     const p = msg.params || {};
+    if (this.run?.kind === 'compact') { this.client.unsupported(msg.id); return; }
     if (!this.run || (p.threadId && p.threadId !== this.threadId) || this.requests.size >= 4 || Buffer.byteLength(JSON.stringify(p)) > 16384) {
       this.client.unsupported(msg.id); return;
     }
@@ -669,7 +767,7 @@ class Chat {
   }
   async close() {
     this.closed = true;
-    clearTimeout(this.notifyTimer); clearTimeout(this.stopTimer);
+    clearTimeout(this.notifyTimer); clearTimeout(this.stopTimer); clearTimeout(this.compactTimer);
     this.cancelRequests();
     if (this.run?.turnId) {
       try { this.client.send({ id: 'shutdown', method: 'turn/interrupt', params: { threadId: this.threadId, turnId: this.run.turnId } }); } catch {}

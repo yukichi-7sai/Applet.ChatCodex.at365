@@ -16,6 +16,14 @@ function failTurn(codexErrorInfo, completionInfo = true) {
   notify('error', { threadId: current.thread, turnId: current.turn, error, willRetry: false });
   notify('turn/completed', { threadId: current.thread, turn: { id: current.turn, status: 'failed', error: completionInfo ? error : { message: error.message } } }); current = null;
 }
+function finishCompact(completeItem = true) {
+  if (!current?.compact) return;
+  clearTimeout(timer);
+  const record = saved.threads[current.thread]?.turns.at(-1);
+  if (record) { record.status = 'completed'; persist(); }
+  if (completeItem) notify('item/completed', { threadId: current.thread, turnId: current.turn, item: { type: 'contextCompaction', id: current.item } });
+  notify('turn/completed', { threadId: current.thread, turn: { id: current.turn, status: 'completed' } }); current = null;
+}
 function finish(text) {
   if (!current) return;
   const record = saved.threads[current.thread]?.turns.at(-1);
@@ -57,11 +65,32 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   } else if (msg.method === 'thread/turns/list') {
     const turns = saved.threads[msg.params.threadId]?.turns || [], offset = Number(msg.params.cursor || 0);
     result = { data: [...turns].reverse().slice(offset, offset + msg.params.limit), nextCursor: offset + msg.params.limit < turns.length ? String(offset + msg.params.limit) : null };
+  } else if (msg.method === 'thread/compact/start') {
+    if (stateFile && fs.existsSync(stateFile)) saved.compactMode = JSON.parse(fs.readFileSync(stateFile, 'utf8')).compactMode;
+    if (saved.compactMode === 'unsupported') return send({ id: msg.id, error: { code: -32601, message: 'Fixture unsupported compaction' } });
+    current = { thread: msg.params.threadId, turn: 'compact-' + ++turn, item: 'compact-item-' + turn, compact: true };
+    saved.threads[current.thread].turns.push({ id: current.turn, status: 'inProgress', items: [{ type: 'contextCompaction', id: current.item }] }); persist();
+    send({ id: msg.id, result: {} });
+    if (saved.compactMode === 'ackOnly') return;
+    notify('turn/started', { threadId: current.thread, turn: { id: current.turn, status: 'inProgress' } });
+    notify('item/started', { threadId: current.thread, turnId: current.turn, item: { type: 'contextCompaction', id: current.item } });
+    if (saved.compactMode === 'hold') return;
+    if (saved.compactMode === 'quota') {
+      saved.usage = { ordinaryUsageAllowed: false, rateLimits: { primary: { usedPercent: 100, resetsAt: null } } }; persist();
+      timer = setTimeout(() => failTurn('usageLimitExceeded'), 30);
+    } else if (saved.compactMode === 'fail') timer = setTimeout(() => failTurn('internalServerError'), 30);
+    else timer = setTimeout(() => finishCompact(saved.compactMode !== 'incomplete'), saved.compactMode === 'slow' ? 1500 : 30);
+    return;
+  } else if (msg.method === 'fixture/completeCompact') {
+    finishCompact(); result = {};
   }
   else if (msg.method === 'turn/start') {
     const text = msg.params.input[0].text;
     if (text.includes('RPC利用制限')) {
       send({ id: msg.id, error: { code: -32600, message: 'Untrusted raw fixture message', data: { codexErrorInfo: 'usageLimitExceeded', apiKey: 'fixture-limit-secret' } } }); return;
+    }
+    if (text.includes('RPCコンテキスト制限')) {
+      send({ id: msg.id, error: { code: -32600, message: 'Fixture context failure', data: { codexErrorInfo: 'contextWindowExceeded' } } }); return;
     }
     if (text.includes('制限拒否') && msg.params.approvalPolicy === 'never') {
       send({ id: msg.id, error: { code: -32602, message: 'Fixture policy does not allow this mode.' } }); return;
@@ -70,7 +99,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     saved.threads[current.thread]?.turns.push({ id: current.turn, status: 'inProgress', items: [{ type: 'userMessage', content: [{ type: 'text', text }] }] }); persist();
     send({ id: msg.id, result: { turn: { id: current.turn, status: 'inProgress' } } });
     notify('turn/started', { threadId: current.thread, turn: { id: current.turn, status: 'inProgress' } });
-    if (text.includes('利用枠制限') || text.includes('一時制限')) {
+    if (text.includes('コンテキスト制限')) timer = setTimeout(() => failTurn('contextWindowExceeded'), 30);
+    else if (text.includes('利用枠制限') || text.includes('一時制限')) {
       saved.usage = { ordinaryUsageAllowed: false, rateLimits: { limitId: 'codex', rateLimitReachedType: 'rate_limit_reached',
         primary: { usedPercent: 100, resetsAt: text.includes('時刻不明') ? null : Math.floor(Date.now() / 1000) + 3600, windowDurationMins: 300 } } }; persist();
       timer = setTimeout(() => failTurn(text.includes('一時制限') ? { httpConnectionFailed: { httpStatusCode: 429 } } : 'usageLimitExceeded', !text.includes('終了情報なし')), 30);

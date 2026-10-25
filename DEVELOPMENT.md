@@ -6,7 +6,7 @@
 - [調査・検証記録](VERIFICATION.md)
 - [本体側の不足と境界](docs/host-gaps.md)
 
-実装はチャットと最後の会話の復元、利用制限の停止表示と手動再開、モデル・思考量・4つの承認モード、送信キー・表示・開始時の指示とメモリ利用の設定に限定する。設計の初回コミットと実装・検証の記録はVERIFICATIONへ分けて記載する。
+実装はチャットと最後の会話の復元、利用制限の停止表示と手動再開、コンテキスト上限後の手動圧縮と引き継ぎ下書き、モデル・思考量・4つの承認モード、送信キー・表示・開始時の指示とメモリ利用の設定に限定する。設計の初回コミットと実装・検証の記録はVERIFICATIONへ分けて記載する。
 
 ## 共通技術資料
 
@@ -46,5 +46,7 @@ Node Applet（CommonJS JavaScript）とローカルHTML/JavaScript UI。実行�
 `dev.bat approval` はCodexの起動引数だけでon-request/user/read-onlyと確認用MCPを指定し、ユーザーのconfig.tomlは変更しない。診断用entryで元のApplet処理を包み、実行時の承認設定だけを証跡へ残す。確認用MCPは承認回答を返すだけで、AppDock設定・ファイル・外部状態を変更しない。ネイティブのmcpServer/tool/callで実MCP確認要求を発生させ、カードで許可した後にモデルへの送信を続ける。全モードの返答と、フルアクセスから継承へ戻した際のread-only復元を確認する。これはKAGUYA実機や実AppDock設定変更の確認とは区別する。
 
 `dev.bat ui` と `dev.bat approval` は、任意の `CHATCODEX_TEST_PACKAGE` に発行済みAppletフォルダーを指定すると、そのコピーを隔離profileで検証する。通常はoutを使う。実Codexは元の導入場所の実体を起動し、隣接するツール実行基盤を失わないようにする。隔離GUIのLOCALAPPDATA変更はCodex子プロセスだけ通常値へ戻す。認証ファイルはコピーしない。
+
+`scripts/resume-probe.cjs --context` は認証なし隔離CODEX_HOMEとローカル模擬モデルで、Responsesのresponse.failedによるcontext_length_exceeded、実CodexのcontextWindowExceeded、手動圧縮のitem完了とturn完了、終了後の完了状態復元、同一会話の明示続行と圧縮後の文脈を確認する。HTTP 400の模擬エラー本文だけではCodexがotherへ分類する場合があるため、文字列の推測判定は追加しない。GUIは圧縮中・失敗・結果不明の復元、停止、再試行、狭幅／明暗表示、引き継ぎ下書きと明示送信までの非送信も確認する。通常の履歴・認証・外部モデルは使わない。
 
 発行先は `A:/40.ARTIFACT/Applet.ChatCodex.at365`。deploy.batは配置先AppDockフォルダーを引数に取り、発行済みのAppletだけをコピーする。配布・実利用先への配置・外部公開はそれぞれ依頼範囲に従う。

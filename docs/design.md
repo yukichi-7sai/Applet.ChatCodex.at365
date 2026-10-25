@@ -1,6 +1,6 @@
 # ChatCodex Applet 初期設計
 
-状態: 0.6.1の実装仕様。初期設計の作成日: 2026-10-25。初期設計は実装前にコミット済み。
+状態: 0.6.2の実装仕様。初期設計の作成日: 2026-10-25。初期設計は実装前にコミット済み。
 
 第13節は将来構想であり、現在の実装仕様・利用可能な機能とは区別する。
 
@@ -15,6 +15,7 @@ AppDock内に小さなCodexチャットを置き、既存MCPによる設定操�
 - 実行中の停止、新しいチャット。
 - AppDock・Applet再起動後の最後のチャットの復元と、同じ会話での作業再開。
 - 利用制限による停止理由・リセット予定の表示、利用状況の確認、同じ会話の手動再開。
+- コンテキスト上限の停止表示、明示操作による圧縮と同じ会話の続行、編集可能な新しい会話への引き継ぎ下書き。
 - Codexが要求した質問・確認への返答、接続・失敗状態の表示。
 - Enter／Ctrl+Enterの送信キー、通常／詳細の表示設定、独立した開発者向け通信ログ、開始時の操作指示と既存メモリ利用の設定。
 
@@ -140,6 +141,9 @@ Codex wireは独自のJSON-RPC形式で、本体用JsonLinePeerの転用はし�
 | `chat.respond` | generation / requestId / response。対応する質問・確認へ返答 |
 | `chat.usage` | generation。停止した会話の利用状況の確認を受け付ける |
 | `chat.resume` | generation / requestId / pauseId。利用可否を再確認して同じ会話の作業再開を受け付ける |
+| `chat.compact` | generation / requestId / recoveryId。停止した会話の手動圧縮を受け付ける |
+| `chat.context-continue` | generation / requestId / recoveryId。圧縮完了後の明示的な続行を受け付ける |
+| `chat.handoff` | generation / recoveryId。保持済み本文の抜粋を新しい会話の編集可能な下書きとして返す |
 
 引数は宣言したstring/number/booleanのみとする。思考量の指定なしは空文字を内部値へ変換する。質問への構造化回答は小さなJSON文字列で受け、Appletでその質問の型と選択肢に照合する。任意RPCのmethodやCodex要求全体を画面から渡せる入口にはしない。
 
@@ -167,7 +171,7 @@ Codexからの対応済みの確認要求は会話内カードで表示する。
 
 ## 8. 状態と終了
 
-状態は `disconnected / connecting / idle / running / awaitingInput / stopping / saving / error` に絞る。完了後の状態保存中も次の送信を受け付けない。接続エラーは理由と再接続操作を会話欄に表示する。認証切れは既存Codexでのログインを案内し、自動ログインしない。
+状態は `disconnected / connecting / idle / running / compacting / awaitingInput / stopping / saving / error` に絞る。完了後の状態保存中も次の送信を受け付けない。接続エラーは理由と再接続操作を会話欄に表示する。認証切れは既存Codexでのログインを案内し、自動ログインしない。
 
 接続が失われた場合、処理が実行済みの可能性を残す。発言や操作を自動で再送しない。再接続は明示操作で行い、保存した会話を復元する。再開失敗では送信を止め、参照を保持する。再接続か、明示的な「新しいチャット」で参照解除を選べる。
 
@@ -209,6 +213,16 @@ Appletが独自の会話履歴ファイルや認証ファイルを作ること�
 
 UIの配色は本体の共通配色を使う。接続状態と最終失敗は会話内に表示し、安全な固定説明を既存context.log.errorで本体ログへ送る。共通エラー通知の公開API不足は[本体側の不足](host-gaps.md)へ記録し、本体は変更しない。本文・認証・生のRPC・生のstderrをログへ残さない。
 
+### コンテキスト上限からの再開
+
+`src/context-recovery.cjs` は構造化されたcontextWindowExceededだけを分類する。停止時は既存lastSessionへ任意の `contextRecovery:{id,status,stoppedAt,canContinue}` を追加する。statusはneeded／compacting／ready／failed／unknown、canContinueは元のturn IDを確認できたかを表す。既存値にこの情報がなくても読み、自動移行・新規設定キー・別履歴ファイルは作らない。
+
+明示的な `chat.compact` は世代・recovery ID・受付IDを照合し、compacting／inFlightを保存してから `thread/compact/start {threadId}` を1回呼ぶ。受付の空応答を完了とせず、対応するturn IDのcontextCompaction item完了とturn成功の両方を確認してreadyを保存する。圧縮要約を通常の返答として表示せず、圧縮中のツール承認要求は未対応として返す。圧縮はCodexの現在の会話モデルを使い、選択モデル・思考量は次の文章送信へ適用する。
+
+圧縮は既存の停止操作で取消できる。全体の待機上限は5分。切断・上限・途中終了後の復元は結果不明とし、自動再試行・自動続行しない。圧縮中の利用制限ではpauseも保持し、利用可能なことを新たに確認してから圧縮をやり直す。contextRecoveryがある間は利用制限用の続行操作を拒否し、圧縮完了前の混同を防ぐ。readyかつ元のturn受付が確認済みの場合だけ、明示操作で同じ会話へ固定の継続依頼を送る。既存の送信ID枠で重複を防ぐ。
+
+引き継ぎ操作は保持済みの最初の依頼と直近4件を最大5件・各UTF-8 4096 bytesで抜粋し、同じ作業場所と確認用の記入欄を含む32KiB未満の下書きを返す。詳細／通信カードは含めず、全文やAI要約とは説明しない。新しい画面へ切り替えても明示送信までは以前のlastSessionを保持し、thread/startやモデル呼出しを行わない。利用者が下書きを確認・補足して送信した時点で、以前と同じcwdで新しい会話を作る。既存履歴・ファイルは削除しない。
+
 ## 10. 保守と実装時の構成
 
 最後の会話の参照保存と履歴のページングは `src/session.cjs` にまとめ、Codex側の履歴ファイルを直接編集しない。終了時の状態保存待ちは最大1秒とし、所有プロセスの終了と並行して本体の停止予算内へ収める。
@@ -228,6 +242,7 @@ manifest、ソース、dev.bat、publish.bat、必要試験をApplet内に置く
 | 画面 | 本体ページ／別Window、非表示復帰、狭い幅、IME、Ctrl+Enter／Enter設定・Shift+Enter、途中表示中のスクロール保持 |
 | 会話 | 1件ずつ送信、継続、新しい会話、停止、停止完了前の二重送信拒否、結果不明時の非再送 |
 | 再開 | 最後の会話のPC専用保存、本体終了・再起動後の本文と文脈の復元、次の入力だけ送信、復元失敗・保存失敗・中断案内・元の継承権限 |
+| コンテキスト上限 | 構造化分類、圧縮完了前の非続行、停止・失敗・結果不明・再起動、同じ会話の手動続行、編集可能な抜粋下書きと送信前の旧参照保持 |
 | 選択 | model/listのページング、対応思考量だけ表示、既定値、選択保存、無効な保存値、モデル切替後の組み合わせ |
 | 通信 | 分割受信、通知と応答の前後、最終itemの重複防止、古い世代、差分回収、RPC上限 |
 | 確認 | 対応要求の表示と返答、古いカード拒否、未対応要求の終了、確認中の停止 |
@@ -279,7 +294,7 @@ manifest、ソース、dev.bat、publish.bat、必要試験をApplet内に置く
 
 初期案では履歴一覧・検索まで広げず、「この開発作業を再開」という最小限の入口を用意する。会話本文・認証・生の通信ログを独自に複製して履歴管理することは前提にしない。開発ソースの保存場所と、会話ID等の端末専用情報の保存場所は分ける。
 
-API候補は `thread/start` の作業場所指定、`thread/resume`、`thread/compact/start`、`turn/start` の承認・実行領域指定。採用Codex版の生成schemaと[公式App Server資料](https://learn.chatgpt.com/docs/app-server)を照合し、実接続で検証する。thread/resumeによる最後の会話の復元は実装済み。任意の開発ワークスペース選択・圧縮操作・工程の復元は未実装。
+API候補は `thread/start` の作業場所指定、`thread/resume`、`thread/compact/start`、`turn/start` の承認・実行領域指定。採用Codex版の生成schemaと[公式App Server資料](https://learn.chatgpt.com/docs/app-server)を照合し、実接続で検証する。最後の会話の復元とコンテキスト上限後の手動圧縮・引き継ぎ下書きは実装済み。任意の開発ワークスペース選択・工程の復元は未実装。
 
 ### 13.3 中断後に続行できること
 

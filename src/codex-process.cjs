@@ -4,6 +4,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const { limitReason } = require('./usage.cjs');
+const { isContextLimit } = require('./context-recovery.cjs');
 
 function resolveCodex(env = process.env, platform = process.platform) {
   const exists = file => { try { return fs.statSync(file).isFile(); } catch { return false; } };
@@ -115,6 +116,7 @@ class CodexProcess extends EventEmitter {
           error.code = msg.error.code;
           const kind = limitReason(msg.error.data) || limitReason(msg.error.data?.error);
           if (kind) error.codexErrorInfo = kind === 'usage' ? 'usageLimitExceeded' : 'rateLimitExceeded';
+          else if (isContextLimit(msg.error.data) || isContextLimit(msg.error.data?.error)) error.codexErrorInfo = 'contextWindowExceeded';
           pending.reject(error);
         } else pending.resolve(msg.result);
       }

@@ -26,9 +26,20 @@
       <p id="usage-reset" data-testid="usage-reset"></p>
       <details id="usage-details" hidden><summary>利用状況の詳細</summary><ul id="usage-windows"></ul></details>
       <p id="usage-checked"></p>
+      <p id="usage-context" hidden>利用可能になったら、会話の圧縮へ戻れます。</p>
       <div class="usage-actions">
         <button id="usage-check" data-testid="usage-check" type="button">利用状況を確認</button>
         <button id="usage-resume" data-testid="usage-resume" type="button">作業を再開</button>
+      </div>
+    </section>
+    <section id="context-panel" data-testid="context-panel" aria-labelledby="context-title" hidden>
+      <h2 id="context-title">会話の長さの上限で停止しました</h2>
+      <p id="context-status" data-testid="context-status" role="status"></p>
+      <p id="context-hint">引き継ぎでは、保持中の会話の抜粋から下書きを作ります。送信前に確認・補足できます。</p>
+      <div class="usage-actions">
+        <button id="context-compact" data-testid="context-compact" type="button">会話を圧縮</button>
+        <button id="context-continue" data-testid="context-continue" type="button">作業を再開</button>
+        <button id="context-handoff" data-testid="context-handoff" type="button">新しいチャットへ引き継ぐ</button>
       </div>
     </section>
     <section id="conversation" data-testid="conversation" aria-label="会話" tabindex="0">
@@ -41,7 +52,7 @@
     <form id="composer">
       <div class="composer-shell">
         <label class="sr-only" for="input">メッセージ</label>
-        <textarea id="input" data-testid="input" rows="3" placeholder="AppDockの設定について相談する" aria-describedby="input-hint"></textarea>
+        <textarea id="input" data-testid="input" rows="3" placeholder="AppDockのテーマをダークにしてください" aria-describedby="input-hint"></textarea>
         <div class="composer-footer">
           <button id="approval" data-testid="approval" class="approval-trigger" type="button" popovertarget="approval-menu" aria-haspopup="menu" aria-expanded="false" aria-label="承認モード">
             <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path id="approval-icon"></path></svg>

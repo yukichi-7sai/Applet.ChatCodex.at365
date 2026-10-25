@@ -6,7 +6,8 @@ const { execFileSync } = require('node:child_process');
 const { Chat } = require('../src/chat.cjs');
 const { CodexProcess, resolveCodex } = require('../src/codex-process.cjs');
 const usageMode = process.argv.includes('--usage');
-const root = path.resolve(__dirname, '..'), folder = path.join(root, '.artifacts', (usageMode ? 'usage-probe-' : 'resume-probe-') + Date.now());
+const contextMode = process.argv.includes('--context');
+const root = path.resolve(__dirname, '..'), folder = path.join(root, '.artifacts', (contextMode ? 'context-probe-' : usageMode ? 'usage-probe-' : 'resume-probe-') + Date.now());
 const home = path.join(folder, 'codex-home'), workspace = path.join(folder, 'workspace'), storageFile = path.join(folder, 'storage.json');
 fs.mkdirSync(home, { recursive: true }); fs.mkdirSync(workspace, { recursive: true });
 const command = resolveCodex(), calls = [], requests = [];
@@ -25,12 +26,16 @@ const server = http.createServer(async (request, response) => {
   assert.ok(request.url.startsWith('/v1/responses'));
   let body = ''; for await (const part of request) { body += part; assert.ok(body.length < 4 * 1024 * 1024); }
   requests.push(JSON.parse(body));
+  if (contextMode && requests.length === 1) {
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    response.end('data: ' + JSON.stringify({ type: 'response.failed', sequence_number: 1, response: { id: 'resp_context_fixture', object: 'response', status: 'failed', error: { code: 'context_length_exceeded', message: 'Isolated fixture context window exceeded' } } }) + '\n\n'); return;
+  }
   if (usageMode && requests.length === 1) {
     response.writeHead(429, { 'Content-Type': 'application/json' });
     response.end(JSON.stringify({ error: { message: 'Isolated fixture rate limit', type: 'rate_limit_error', code: 'rate_limit_exceeded' } })); return;
   }
   response.writeHead(200, { 'Content-Type': 'text/event-stream' });
-  const text = requests.length === 1 ? 'RESUME_FIRST_OK' : 'RESUME_CONTINUED_OK';
+  const text = contextMode && requests.length === 2 ? 'COMPACTED_SUMMARY: preserve original task ISOLATED_RESUME_USER_FIRST; continue unfinished work.' : requests.length === 1 ? 'RESUME_FIRST_OK' : 'RESUME_CONTINUED_OK';
   const item = { id: 'msg_fixture_' + requests.length, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] };
   for (const event of [
     { type: 'response.created', response: { id: 'resp_fixture_' + requests.length } },
@@ -44,6 +49,7 @@ const server = http.createServer(async (request, response) => {
 const make = () => new Chat({ storage, settings: { sendOperationInstructions: false, memoryMode: 'exclude' },
   getHostInfo: async () => ({ instanceId: 'isolated-resume-fixture' }), clientFactory: () => {
     const client = new CodexProcess({ command, env, cwd: workspace });
+    if (contextMode) client.on('notification', message => { if (message.method === 'error') result.nativeErrorInfo = message.params?.error?.codexErrorInfo; });
     const request = client.request.bind(client);
     client.request = (method, params, ...rest) => {
       if (method === 'thread/start') params = { ...params, cwd: workspace };
@@ -73,28 +79,39 @@ const result = { ok: false, isolatedCodexHome: true, localMockProvider: true, re
     await send(first, 'first', 'ISOLATED_RESUME_USER_FIRST');
     const threadId = first.threadId, defaults = structuredClone(first.threadDefaults);
     if (usageMode) { assert.ok(first.pause); assert.equal(first.usage.status, 'blocked'); result.nativeLimitKind = first.pause.kind; }
+    else if (contextMode) { assert.equal(first.contextRecovery?.status, 'needed'); result.contextLimitDetected = true; }
     else assert.ok(first.entries.some(entry => entry.text.includes('RESUME_FIRST_OK')));
     await first.close(); calls.length = 0;
     second = make(); await connect(second);
     assert.equal(second.threadId, threadId); assert.deepEqual(second.threadDefaults, defaults);
     assert.ok(second.entries.some(entry => entry.role === 'user' && entry.text.includes('ISOLATED_RESUME_USER_FIRST')));
     if (usageMode) { assert.ok(second.pause); assert.equal(second.usage.status, 'blocked'); }
+    else if (contextMode) assert.equal(second.contextRecovery?.status, 'needed');
     else assert.ok(second.entries.some(entry => entry.role === 'assistant' && entry.text.includes('RESUME_FIRST_OK')));
     assert.equal(requests.length, 1); assert.equal(calls.some(call => call.method === 'turn/start'), false);
     await second.selectApproval(second.generation, 'inherit');
     if (usageMode) {
       recovered = true; second.resumeWork(second.generation, 'continued', second.pause.id);
       await until(() => !second.pause && second.state === 'idle' && !second.usageOperation);
+    } else if (contextMode) {
+      second.compact(second.generation, 'compact', second.contextRecovery.id);
+      await until(() => second.contextRecovery?.status === 'ready' && second.state === 'idle');
+      assert.equal(requests.length, 2); assert.equal(calls.some(call => call.method === 'turn/start'), false);
+      await second.close(); second = make(); await connect(second);
+      assert.equal(second.contextRecovery?.status, 'ready'); assert.equal(second.threadId, threadId);
+      second.continueContext(second.generation, 'continued', second.contextRecovery.id);
+      await until(() => !second.contextRecovery && second.state === 'idle');
+      result.compactionCompletedAndRestored = true;
     } else await send(second, 'continued', 'ISOLATED_RESUME_USER_CONTINUED');
-    assert.equal(second.threadId, threadId); assert.equal(requests.length, 2);
-    const input = JSON.stringify(requests[1].input);
-    const required = usageMode ? ['ISOLATED_RESUME_USER_FIRST', require('../src/usage.cjs').continuation] : ['ISOLATED_RESUME_USER_FIRST', 'RESUME_FIRST_OK', 'ISOLATED_RESUME_USER_CONTINUED'];
+    assert.equal(second.threadId, threadId); assert.equal(requests.length, contextMode ? 3 : 2);
+    const input = JSON.stringify(requests.at(-1).input);
+    const required = contextMode ? ['COMPACTED_SUMMARY', require('../src/context-recovery.cjs').continuation] : usageMode ? ['ISOLATED_RESUME_USER_FIRST', require('../src/usage.cjs').continuation] : ['ISOLATED_RESUME_USER_FIRST', 'RESUME_FIRST_OK', 'ISOLATED_RESUME_USER_CONTINUED'];
     for (const text of required) assert.ok(input.includes(text), text);
-    assert.equal(input.split('ISOLATED_RESUME_USER_FIRST').length - 1, 1);
+    if (!contextMode) assert.equal(input.split('ISOLATED_RESUME_USER_FIRST').length - 1, 1);
     assert.ok(second.entries.some(entry => entry.text.includes('RESUME_CONTINUED_OK')));
     assert.equal(calls.find(call => call.method === 'turn/start').params.sandboxPolicy.type, defaults.sandboxPolicy.type);
     Object.assign(result, { ok: true, codexVersion: execFileSync(command.file, [...command.args, '--version'], { encoding: 'utf8', windowsHide: true }).trim(), codexSha256: createHash('sha256').update(fs.readFileSync(command.file)).digest('hex'),
-      restoredMessages: usageMode ? 1 : 2, providerRequests: requests.length, historyPreservedInNextInput: true, automaticReplay: false, originalInheritanceRestored: true });
+      restoredMessages: usageMode || contextMode ? 1 : 2, providerRequests: requests.length, historyPreservedInNextInput: true, automaticReplay: false, originalInheritanceRestored: true });
   } finally {
     await first?.close(); await second?.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
     fs.writeFileSync(path.join(folder, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify({ ...result, folder }));

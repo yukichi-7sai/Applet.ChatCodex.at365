@@ -9,7 +9,7 @@ const approvalIcons = {
 };
 let generation = 0, after = 0, state, draftSelection, performing = false, reading = false, readAgain = false, autoConnected = false, composing = false;
 const entries = new Map(), bubbles = new Map(), cards = new Map();
-const labels = { disconnected: '未接続', connecting: '接続中…', idle: '接続済み', running: '応答中…', awaitingInput: '返答を待っています', stopping: '停止中…', saving: '会話を保存しています…', error: '接続を確認してください' };
+const labels = { disconnected: '未接続', connecting: '接続中…', idle: '接続済み', running: '応答中…', awaitingInput: '返答を待っています', stopping: '停止中…', compacting: '会話を圧縮中…', saving: '会話を保存しています…', error: '接続を確認してください' };
 const call = (id, input = {}) => window.appletPage.call('actions.invoke', { id, input: { generation, ...input } });
 function notice(message = '') { $('notice').textContent = message; $('notice').hidden = !message; }
 function option(value, label) { const node = document.createElement('option'); node.value = value; node.textContent = label; return node; }
@@ -59,7 +59,7 @@ function usageTime(seconds) {
 }
 function renderUsage(valid) {
   const usage = state.usage;
-  $('usage-panel').hidden = !usage;
+  $('usage-panel').hidden = !usage || !!state.contextRecovery && usage.status === 'available';
   if (!usage) return;
   $('usage-title').textContent = usage.kind === 'usage' ? 'Codexの利用制限で停止しました' : 'Codexの一時的な送信制限で停止しました';
   const labels = {
@@ -84,6 +84,28 @@ function renderUsage(valid) {
   const idle = state.state === 'idle' && !performing && !state.saving && !usage.checking;
   $('usage-check').disabled = !idle;
   $('usage-resume').disabled = !idle || usage.status !== 'available' || !usage.canContinue || !valid || !!draftSelection;
+  $('usage-resume').hidden = !!state.contextRecovery;
+  $('usage-context').hidden = !state.contextRecovery;
+}
+function renderContext(valid) {
+  const recovery = state.contextRecovery;
+  $('context-panel').hidden = !recovery || !!state.usage && state.usage.status !== 'available';
+  if (!recovery) return;
+  const text = {
+    needed: '会話が長くなっています。Codexで要点を圧縮すると、同じ会話で続きを送れる場合があります。',
+    compacting: 'Codexで会話を圧縮しています。完了するまでお待ちください。',
+    ready: '会話の圧縮が完了しました。［作業を再開］から続きを送れます。',
+    failed: '会話を圧縮できませんでした。やり直すか、新しいチャットへの引き継ぎを選べます。',
+    unknown: '前回の圧縮が完了したか確認できません。やり直すか、新しいチャットへの引き継ぎを選べます。',
+  };
+  $('context-status').textContent = recovery.status === 'ready' && !recovery.canContinue ? '元の依頼が保存されたか確認できません。入力欄から確認して送信してください。' : text[recovery.status] || text.unknown;
+  const idle = state.state === 'idle' && !performing && !state.saving && !state.usage?.checking;
+  $('context-compact').hidden = recovery.status === 'ready';
+  $('context-compact').disabled = !idle;
+  $('context-continue').hidden = recovery.status !== 'ready';
+  $('context-continue').disabled = !idle || !recovery.canContinue || !valid || !!draftSelection || !!state.usage;
+  $('context-handoff').disabled = !idle;
+  $('context-hint').hidden = recovery.status === 'compacting';
 }
 function renderControls() {
   if (!state) return;
@@ -101,13 +123,14 @@ function renderControls() {
   $('model').disabled = !idle;
   $('effort').disabled = !idle || !model?.efforts.length;
   $('new-chat').disabled = !(idle || state.canStartNew && !performing && !state.saving) || !!draftSelection;
-  const active = ['running', 'awaitingInput', 'stopping'].includes(state.state);
+  const active = ['running', 'awaitingInput', 'stopping', 'compacting'].includes(state.state);
   const sendLabel = active ? (state.state === 'stopping' ? '停止中…' : '停止') : '送信';
   $('send-label').textContent = sendLabel; $('send').setAttribute('aria-label', sendLabel); $('send').title = sendLabel;
   $('send').classList.toggle('is-stop', active);
   $('send-icon').setAttribute('d', active ? 'M7 7h10v10H7Z' : 'M12 19V5m-6 6 6-6 6 6');
   const valid = state.approvalModes?.some(mode => mode.id === state.approvalMode) && model && (!model.efforts.length || model.efforts.includes(selected.effort));
   renderUsage(valid);
+  renderContext(valid);
   $('send').disabled = performing || (active ? state.state === 'stopping' : !idle || !valid || !!draftSelection || !$('input').value.trim());
   $('connect').hidden = !['error', 'disconnected'].includes(state.state);
   $('connect').disabled = performing;
@@ -248,13 +271,13 @@ $('input').addEventListener('keydown', event => {
   const sendOnControl = state?.sendKey !== 'enter';
   if (event.key === 'Enter' && event.ctrlKey === sendOnControl && !event.shiftKey && !event.altKey && !event.metaKey && !event.isComposing && !composing && event.keyCode !== 229) {
     event.preventDefault();
-    if (!['running', 'awaitingInput', 'stopping'].includes(state?.state) && !$('send').disabled) $('composer').requestSubmit();
+    if (!['running', 'awaitingInput', 'stopping', 'compacting'].includes(state?.state) && !$('send').disabled) $('composer').requestSubmit();
   }
 });
 $('composer').addEventListener('submit', event => {
   event.preventDefault();
   if ($('send').disabled) return;
-  if (['running', 'awaitingInput'].includes(state?.state)) { void perform(() => call('chat.stop')); return; }
+  if (['running', 'awaitingInput', 'compacting'].includes(state?.state)) { void perform(() => call('chat.stop')); return; }
   const text = $('input').value;
   void perform(async () => {
     await call('chat.send', { requestId: crypto.randomUUID(), text });
@@ -265,6 +288,12 @@ $('new-chat').addEventListener('click', () => void perform(async () => { await c
 $('connect').addEventListener('click', () => void perform(() => call('chat.connect')));
 $('usage-check').addEventListener('click', () => void perform(() => call('chat.usage')));
 $('usage-resume').addEventListener('click', () => void perform(() => call('chat.resume', { requestId: crypto.randomUUID(), pauseId: state.usage?.pauseId })));
+$('context-compact').addEventListener('click', () => void perform(() => call('chat.compact', { requestId: crypto.randomUUID(), recoveryId: state.contextRecovery?.id })));
+$('context-continue').addEventListener('click', () => void perform(() => call('chat.context-continue', { requestId: crypto.randomUUID(), recoveryId: state.contextRecovery?.id })));
+$('context-handoff').addEventListener('click', () => void perform(async () => {
+  const result = await call('chat.handoff', { recoveryId: state.contextRecovery?.id });
+  $('input').value = result.draft; $('input').focus(); $('input').setSelectionRange(0, 0); $('input').scrollTop = 0;
+}));
 $('approval-menu').addEventListener('toggle', event => {
   const open = event.newState === 'open'; $('approval').setAttribute('aria-expanded', String(open));
   if (open) { positionApprovalMenu(); $('approval-options').querySelector('[aria-checked="true"]')?.focus(); }
