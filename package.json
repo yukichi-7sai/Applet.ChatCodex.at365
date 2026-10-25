@@ -1,6 +1,6 @@
 {
   "name": "applet-chatcodex-at365",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "private": true,
   "description": "AppDock用の小さなCodexチャットApplet",
   "engines": { "node": "24.22.1" }

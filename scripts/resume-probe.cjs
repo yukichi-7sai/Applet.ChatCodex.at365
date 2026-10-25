@@ -7,7 +7,8 @@ const { Chat } = require('../src/chat.cjs');
 const { CodexProcess, resolveCodex } = require('../src/codex-process.cjs');
 const usageMode = process.argv.includes('--usage');
 const contextMode = process.argv.includes('--context');
-const root = path.resolve(__dirname, '..'), folder = path.join(root, '.artifacts', (contextMode ? 'context-probe-' : usageMode ? 'usage-probe-' : 'resume-probe-') + Date.now());
+const outputMode = process.argv.includes('--output');
+const root = path.resolve(__dirname, '..'), folder = path.join(root, '.artifacts', (outputMode ? 'output-probe-' : contextMode ? 'context-probe-' : usageMode ? 'usage-probe-' : 'resume-probe-') + Date.now());
 const home = path.join(folder, 'codex-home'), workspace = path.join(folder, 'workspace'), storageFile = path.join(folder, 'storage.json');
 fs.mkdirSync(home, { recursive: true }); fs.mkdirSync(workspace, { recursive: true });
 const command = resolveCodex(), calls = [], requests = [];
@@ -35,7 +36,7 @@ const server = http.createServer(async (request, response) => {
     response.end(JSON.stringify({ error: { message: 'Isolated fixture rate limit', type: 'rate_limit_error', code: 'rate_limit_exceeded' } })); return;
   }
   response.writeHead(200, { 'Content-Type': 'text/event-stream' });
-  const text = contextMode && requests.length === 2 ? 'COMPACTED_SUMMARY: preserve original task ISOLATED_RESUME_USER_FIRST; continue unfinished work.' : requests.length === 1 ? 'RESUME_FIRST_OK' : 'RESUME_CONTINUED_OK';
+  const text = outputMode && requests.length === 1 ? 'RESUME_FIRST_OK\n' + 'x'.repeat(1024 * 1024 + 512) + '\nNATIVE_HIDDEN_TAIL' : contextMode && requests.length === 2 ? 'COMPACTED_SUMMARY: preserve original task ISOLATED_RESUME_USER_FIRST; continue unfinished work.' : requests.length === 1 ? 'RESUME_FIRST_OK' : 'RESUME_CONTINUED_OK';
   const item = { id: 'msg_fixture_' + requests.length, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] };
   for (const event of [
     { type: 'response.created', response: { id: 'resp_fixture_' + requests.length } },
@@ -81,6 +82,11 @@ const result = { ok: false, isolatedCodexHome: true, localMockProvider: true, re
     if (usageMode) { assert.ok(first.pause); assert.equal(first.usage.status, 'blocked'); result.nativeLimitKind = first.pause.kind; }
     else if (contextMode) { assert.equal(first.contextRecovery?.status, 'needed'); result.contextLimitDetected = true; }
     else assert.ok(first.entries.some(entry => entry.text.includes('RESUME_FIRST_OK')));
+    if (outputMode) {
+      assert.equal(first.read(0, 0).replyOmitted, true); assert.equal(calls.some(call => call.method === 'turn/interrupt'), false);
+      assert.ok(first.entries.filter(entry => entry.role === 'assistant').reduce((sum, entry) => sum + entry.text.length, 0) <= 1024 * 1024);
+      result.longReplyContinuedWithoutInterrupt = true;
+    }
     await first.close(); calls.length = 0;
     second = make(); await connect(second);
     assert.equal(second.threadId, threadId); assert.deepEqual(second.threadDefaults, defaults);
@@ -89,6 +95,7 @@ const result = { ok: false, isolatedCodexHome: true, localMockProvider: true, re
     else if (contextMode) assert.equal(second.contextRecovery?.status, 'needed');
     else assert.ok(second.entries.some(entry => entry.role === 'assistant' && entry.text.includes('RESUME_FIRST_OK')));
     assert.equal(requests.length, 1); assert.equal(calls.some(call => call.method === 'turn/start'), false);
+    if (outputMode) { assert.equal(second.read(0, 0).replyOmitted, true); result.longReplyRestoredWithinLimit = true; }
     await second.selectApproval(second.generation, 'inherit');
     if (usageMode) {
       recovered = true; second.resumeWork(second.generation, 'continued', second.pause.id);
@@ -107,6 +114,7 @@ const result = { ok: false, isolatedCodexHome: true, localMockProvider: true, re
     const input = JSON.stringify(requests.at(-1).input);
     const required = contextMode ? ['COMPACTED_SUMMARY', require('../src/context-recovery.cjs').continuation] : usageMode ? ['ISOLATED_RESUME_USER_FIRST', require('../src/usage.cjs').continuation] : ['ISOLATED_RESUME_USER_FIRST', 'RESUME_FIRST_OK', 'ISOLATED_RESUME_USER_CONTINUED'];
     for (const text of required) assert.ok(input.includes(text), text);
+    if (outputMode) { assert.ok(input.includes('NATIVE_HIDDEN_TAIL')); assert.equal(calls.some(call => call.method === 'turn/interrupt'), false); result.hiddenOutputRemainsInCodexContext = true; }
     if (!contextMode) assert.equal(input.split('ISOLATED_RESUME_USER_FIRST').length - 1, 1);
     assert.ok(second.entries.some(entry => entry.text.includes('RESUME_CONTINUED_OK')));
     assert.equal(calls.find(call => call.method === 'turn/start').params.sandboxPolicy.type, defaults.sandboxPolicy.type);

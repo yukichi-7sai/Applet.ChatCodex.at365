@@ -9,8 +9,13 @@ const { continuation, limitReason, usageSnapshot } = require('./usage.cjs');
 const { continuation: contextContinuation, isContextLimit, handoffDraft } = require('./context-recovery.cjs');
 const busy = new Set(['connecting', 'running', 'awaitingInput', 'stopping', 'saving', 'compacting']);
 const textLimit = 32768;
+const replyLimit = 1024 * 1024;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const short = (value, max = 4000) => typeof value === 'string' ? value.slice(0, max) : '';
+function replyText(text, limit = replyLimit) {
+  const shown = text.slice(0, limit);
+  return text.length > limit && /[\uD800-\uDBFF]$/.test(shown) ? shown.slice(0, -1) : shown;
+}
 
 function modelsFrom(data) {
   if (!Array.isArray(data)) throw Error('Codexのモデル一覧形式に対応していません。');
@@ -114,9 +119,13 @@ class Chat {
     if (!delta) return;
     let item = this.items?.get(itemId);
     if (!item) {
-      item = { id: itemId, parts: this.entry('assistant', '', itemId) };
+      item = { id: itemId, parts: this.entry('assistant', '', itemId), length: 0 };
       this.items.set(itemId, item);
     }
+    if (item.completed || item.omitted) return;
+    const remaining = replyLimit - item.length, omitted = delta.length > remaining;
+    delta = replyText(delta, remaining);
+    item.length += delta.length;
     while (delta.length) {
       let part = item.parts.at(-1);
       if (part.text.length >= 4096) {
@@ -131,9 +140,11 @@ class Chat {
       part.revision = ++this.revision;
       part.active = true;
     }
-    if (item.parts.reduce((sum, part) => sum + part.text.length, 0) > 1024 * 1024) {
-      void this.stop(this.generation);
-      this.detail = '返答の表示上限に達したため停止しています。';
+    if (omitted) {
+      item.omitted = true;
+      const part = item.parts.at(-1);
+      if (/[\uD800-\uDBFF]$/.test(part.text)) { part.text = part.text.slice(0, -1); item.length--; }
+      part.truncated = true; part.revision = ++this.revision;
     }
     this.trim(); this.touch();
   }
@@ -146,6 +157,7 @@ class Chat {
       sessionNotice: this.sessionNotice || '', canStartNew: this.state === 'error',
       usage: this.pause ? { pauseId: this.pause.id, kind: this.pause.kind, canContinue: this.pause.canContinue, ...(this.usage || { status: 'unknown', windows: [], nextReset: null }), checking: !!this.usageOperation } : null,
       contextRecovery: this.contextRecovery,
+      replyOmitted: this.entries.some(entry => entry.truncated),
       displayMode: this.settings.displayMode,
       wireLogEnabled: this.settings.wireLogEnabled,
       diagnosticsOmitted: { detail: this.diagnostics.detail.omitted, trace: this.diagnostics.trace.omitted },
@@ -290,7 +302,10 @@ class Chat {
       if (item.type === 'userMessage' && Array.isArray(item.content)) {
         const text = item.content.map(part => part.type === 'text' && typeof part.text === 'string' ? part.text : '[添付データ]').join('\n');
         this.entry('user', text);
-      } else if (item.type === 'agentMessage' && typeof item.text === 'string') this.entry('assistant', item.text);
+      } else if (item.type === 'agentMessage' && typeof item.text === 'string') {
+        const shown = replyText(item.text), parts = this.entry('assistant', shown);
+        if (shown.length < item.text.length) parts.at(-1).truncated = true;
+      }
     }
     this.omitted ||= history.omitted;
     const lastStatus = history.turns.at(-1)?.status;
@@ -550,7 +565,7 @@ class Chat {
       if (typeof p.itemId === 'string' && typeof p.delta === 'string') this.append(p.itemId, p.delta);
     } else if (method === 'item/completed' && p.item?.type === 'agentMessage') {
       const id = p.item.id;
-      const text = short(p.item.text, 1024 * 1024);
+      const original = typeof p.item.text === 'string' ? p.item.text : '', text = replyText(original);
       let item = this.items.get(id);
       if (!item) { item = { id, parts: this.entry('assistant', '', id) }; this.items.set(id, item); }
       const count = Math.max(1, Math.ceil(text.length / 4096));
@@ -558,7 +573,9 @@ class Chat {
         const part = this.entry('assistant', '', id + ':part:' + item.parts.length)[0];
         part.id = id + ':' + item.parts.length * 4096; part.messageId = id; item.parts.push(part);
       }
-      item.parts.forEach((part, index) => { part.text = text.slice(index * 4096, (index + 1) * 4096); part.revision = ++this.revision; delete part.active; });
+      item.parts.forEach((part, index) => { part.text = text.slice(index * 4096, (index + 1) * 4096); part.revision = ++this.revision; delete part.active; delete part.truncated; });
+      item.length = text.length; item.completed = true;
+      if (text.length < original.length) item.parts.at(-1).truncated = true;
       this.touch();
     } else if (method === 'item/started' && p.item?.type === 'mcpToolCall') {
       this.detail = 'MCPの操作を実行しています。'; this.touch();

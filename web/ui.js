@@ -163,12 +163,17 @@ function renderEntries(records) {
       const text = document.createElement(parts[0].kind ? 'pre' : 'div'); text.className = 'message-text';
       node.append(title, text); bubbles.set(id, node);
     }
-    const text = parts.map(part => part.text).join('');
-    if (node.lastChild.textContent !== text) node.lastChild.textContent = text;
+    const text = parts.map(part => part.text).join(''), body = node.querySelector('.message-text');
+    if (body.textContent !== text) body.textContent = text;
+    let truncated = node.querySelector('.reply-truncated');
+    if (parts.some(part => part.truncated)) {
+      if (!truncated) { truncated = document.createElement('p'); truncated.className = 'reply-truncated'; truncated.textContent = '長いため、返答の表示を一部省略しています。'; node.append(truncated); }
+    } else truncated?.remove();
     $('messages').append(node);
   }
   $('empty').hidden = groups.size > 0;
   $('omitted').hidden = !state.omitted;
+  $('reply-note').hidden = !state.replyOmitted;
   const notes = [];
   if (state.displayMode === 'detail' && state.diagnosticsOmitted?.detail) notes.push('古い詳細情報を整理して、最新の記録を続けています。');
   if (state.wireLogEnabled && state.diagnosticsOmitted?.trace) notes.push('古い通信ログを整理して、最新の記録を続けています。');

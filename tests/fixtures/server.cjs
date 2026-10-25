@@ -108,6 +108,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       notify('error', { threadId: current.thread, turnId: current.turn, error: { codexErrorInfo: 'rateLimitExceeded' }, willRetry: true });
       timer = setTimeout(() => finish('再試行して回復しました。'), 30);
     } else if (text.includes('通常の失敗')) timer = setTimeout(() => failTurn('internalServerError'), 30);
+    else if (text.includes('表示省略テスト')) timer = setTimeout(() => finish('VISIBLE_REPLY_START\n' + '文'.repeat(1024 * 1024 + 512) + '\nHIDDEN_REPLY_TAIL'), 30);
     else if (text.includes('ログ大量')) {
       for (let n = 0; n < 230; n++) {
         const item = { id: 'storm-' + turn + '-' + n, type: 'mcpToolCall', server: 'fixture', tool: 'log-storm-' + n, arguments: { n }, status: 'inProgress' };
@@ -137,6 +138,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     else timer = setTimeout(() => finish(text.includes('長文') ? '文'.repeat(10000) : '応答: ' + text + ' [' + msg.params.model + '/' + (msg.params.effort || '指定なし') + ']'), 30);
     return;
   } else if (msg.method === 'turn/interrupt') {
+    saved.interruptions = (saved.interruptions || 0) + 1;
     clearTimeout(timer);
     const record = saved.threads[current?.thread]?.turns.at(-1);
     if (record) { record.status = 'interrupted'; persist(); }

@@ -3,7 +3,7 @@
   "id": "at365.chatcodex",
   "name": "Applet.ChatCodex.at365",
   "displayName": "ChatCodex",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "minimumHostVersion": "0.86.13",
   "runtime": "node",
   "entry": "src/applet.cjs",

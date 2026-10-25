@@ -34,3 +34,47 @@ test('壊れたJSONと巨大な受信は接続を閉じる', () => {
   const a = new CodexProcess(); a.consume('not-json\n'); assert.equal(a.closed, true);
   const b = new CodexProcess(); b.consume('x'.repeat(8 * 1024 * 1024 + 1)); assert.equal(b.closed, true);
 });
+
+const frameLimit = 8 * 1024 * 1024;
+function frameOfBytes(bytes, tail = '') {
+  const prefix = '{"method":"fixture/data","params":{"text":"', suffix = '"}}';
+  return prefix + 'x'.repeat(bytes - Buffer.byteLength(prefix + tail + suffix)) + tail + suffix;
+}
+test('短いJSON行が同時に8MiBを超えて届いても、行ごとに受信を続ける', () => {
+  const client = new CodexProcess(); let received = 0;
+  client.on('notification', () => received++);
+  const line = frameOfBytes(1024 * 1024) + '\n';
+  client.consume(line.repeat(9));
+  assert.equal(client.closed, false); assert.equal(received, 9); assert.equal(client.buffer, '');
+});
+test('1行8MiBちょうどと隣の行を、分割chunkでも切断せず処理する', () => {
+  const client = new CodexProcess(); let received = 0;
+  client.on('notification', () => received++);
+  const exact = frameOfBytes(frameLimit, '文');
+  const small = '{"method":"fixture/next","params":{}}\n';
+  assert.equal(Buffer.byteLength(exact), frameLimit);
+  client.consume(exact.slice(0, 100)); client.consume(exact.slice(100));
+  assert.equal(client.closed, false); assert.equal(received, 0);
+  client.consume('\n' + small + small.slice(0, 10));
+  assert.equal(client.closed, false); assert.equal(received, 2);
+  client.consume(small.slice(10));
+  assert.equal(client.closed, false); assert.equal(received, 3); assert.equal(client.buffer, '');
+});
+test('同じchunkに小さい行が先行していても、上限超過の単一行で停止し再送しない', () => {
+  const client = new CodexProcess(); let received = 0, sent = 0, closed = 0;
+  client.on('notification', () => received++); client.on('closed', () => closed++); client.send = () => sent++;
+  const small = '{"method":"fixture/next","params":{}}\n', oversized = frameOfBytes(frameLimit + 1, '文');
+  assert.ok(oversized.length <= frameLimit);
+  client.consume(small + oversized + '\n' + small);
+  assert.equal(client.closed, true); assert.equal(received, 1); assert.equal(sent, 0); assert.equal(closed, 1);
+  client.consume(small); assert.equal(received, 1); assert.equal(sent, 0);
+});
+test('改行前のJSON行も分割受信の合計バイトが上限を超えた時点で停止する', () => {
+  const client = new CodexProcess(); let sent = 0;
+  client.send = () => sent++;
+  const oversized = frameOfBytes(frameLimit + 1, '文');
+  client.consume(oversized.slice(0, 100)); client.consume(oversized.slice(100, -3));
+  assert.equal(client.closed, false);
+  client.consume(oversized.slice(-3));
+  assert.equal(client.closed, true); assert.equal(sent, 0);
+});

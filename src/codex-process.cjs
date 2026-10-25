@@ -90,10 +90,10 @@ class CodexProcess extends EventEmitter {
   consume(chunk) {
     if (this.closed) return;
     this.buffer += chunk;
-    if (Buffer.byteLength(this.buffer) > 8 * 1024 * 1024) return this.fail('Codexの応答が大きすぎます。');
     let newline;
     while ((newline = this.buffer.indexOf('\n')) >= 0) {
       const line = this.buffer.slice(0, newline);
+      if (Buffer.byteLength(line) > 8 * 1024 * 1024) return this.fail('Codexの応答が大きすぎます。');
       this.buffer = this.buffer.slice(newline + 1);
       if (!line.trim()) continue;
       let msg;
@@ -120,7 +120,9 @@ class CodexProcess extends EventEmitter {
           pending.reject(error);
         } else pending.resolve(msg.result);
       }
+      if (this.closed) return;
     }
+    if (Buffer.byteLength(this.buffer) > 8 * 1024 * 1024) return this.fail('Codexの応答が大きすぎます。');
   }
   send(message, method = message.method) {
     if (this.closed || !this.child?.stdin.writable) throw Error('Codexに接続されていません。');
