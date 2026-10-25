@@ -21,6 +21,10 @@ function fixture(t, history = []) {
     if (method === 'model/list') return { data: [{ model: 'fixture-model', displayName: 'Fixture', isDefault: true, supportedReasoningEfforts: [] }] };
     if (method === 'thread/start' || method === 'thread/resume') return { thread: { id: 'fixture-thread', status: { type: 'idle' } }, cwd: params.cwd, ...defaults };
     if (method === 'thread/turns/list') return { data: history, nextCursor: null };
+    if (method === 'thread/items/list') {
+      const items = [...history.find(turn => turn.id === params.turnId).items].reverse(), offset = Number(params.cursor || 0);
+      return { data: items.slice(offset, offset + params.limit).map(item => ({ turnId: params.turnId, item })), nextCursor: offset + params.limit < items.length ? String(offset + params.limit) : null };
+    }
     if (method === 'turn/start') return { turn: { id: 'turn-' + calls.filter(call => call.method === method).length } };
     throw Error('Unexpected fixture method: ' + method);
   };

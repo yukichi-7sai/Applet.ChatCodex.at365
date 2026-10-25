@@ -63,8 +63,17 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     if (!record) return send({ id: msg.id, error: { code: -32600, message: 'missing fixture thread' } });
     result = { thread: { ...record, turns: [] }, cwd: record.cwd, approvalPolicy: 'never', approvalsReviewer: 'user', sandbox: { type: 'dangerFullAccess' } };
   } else if (msg.method === 'thread/turns/list') {
+    if (stateFile && fs.existsSync(stateFile)) saved.historyMode = JSON.parse(fs.readFileSync(stateFile, 'utf8')).historyMode;
+    if (saved.historyMode === 'oversized') { process.stdout.write(JSON.stringify({ id: msg.id, result: { padding: 'x'.repeat(8 * 1024 * 1024) } }) + '\n'); return; }
+    if (saved.historyMode === 'unavailable') return send({ id: msg.id, error: { code: -32601, message: 'Fixture history unavailable' } });
     const turns = saved.threads[msg.params.threadId]?.turns || [], offset = Number(msg.params.cursor || 0);
-    result = { data: [...turns].reverse().slice(offset, offset + msg.params.limit), nextCursor: offset + msg.params.limit < turns.length ? String(offset + msg.params.limit) : null };
+    const data = [...turns].reverse().slice(offset, offset + msg.params.limit);
+    result = { data: msg.params.itemsView === 'notLoaded' ? data.map(turn => ({ ...turn, items: [] })) : data, nextCursor: offset + msg.params.limit < turns.length ? String(offset + msg.params.limit) : null };
+  } else if (msg.method === 'thread/items/list') {
+    if (saved.historyMode === 'legacy') return send({ id: msg.id, error: { code: -32601, message: 'Fixture items unsupported' } });
+    const record = saved.threads[msg.params.threadId]?.turns.find(turn => turn.id === msg.params.turnId);
+    const items = [...(record?.items || [])].reverse(), offset = Number(msg.params.cursor || 0);
+    result = { data: items.slice(offset, offset + msg.params.limit).map(item => ({ turnId: record.id, item })), nextCursor: offset + msg.params.limit < items.length ? String(offset + msg.params.limit) : null };
   } else if (msg.method === 'thread/compact/start') {
     if (stateFile && fs.existsSync(stateFile)) saved.compactMode = JSON.parse(fs.readFileSync(stateFile, 'utf8')).compactMode;
     if (saved.compactMode === 'unsupported') return send({ id: msg.id, error: { code: -32601, message: 'Fixture unsupported compaction' } });

@@ -8,7 +8,8 @@ const { CodexProcess, resolveCodex } = require('../src/codex-process.cjs');
 const usageMode = process.argv.includes('--usage');
 const contextMode = process.argv.includes('--context');
 const outputMode = process.argv.includes('--output');
-const root = path.resolve(__dirname, '..'), folder = path.join(root, '.artifacts', (outputMode ? 'output-probe-' : contextMode ? 'context-probe-' : usageMode ? 'usage-probe-' : 'resume-probe-') + Date.now());
+const historyMode = process.argv.includes('--history');
+const root = path.resolve(__dirname, '..'), folder = path.join(root, '.artifacts', (historyMode ? 'history-probe-' : outputMode ? 'output-probe-' : contextMode ? 'context-probe-' : usageMode ? 'usage-probe-' : 'resume-probe-') + Date.now());
 const home = path.join(folder, 'codex-home'), workspace = path.join(folder, 'workspace'), storageFile = path.join(folder, 'storage.json');
 fs.mkdirSync(home, { recursive: true }); fs.mkdirSync(workspace, { recursive: true });
 const command = resolveCodex(), calls = [], requests = [];
@@ -25,7 +26,7 @@ const storage = {
 const server = http.createServer(async (request, response) => {
   assert.equal(request.headers.authorization, undefined, 'isolated provider must not receive credentials');
   assert.ok(request.url.startsWith('/v1/responses'));
-  let body = ''; for await (const part of request) { body += part; assert.ok(body.length < 4 * 1024 * 1024); }
+  let body = ''; for await (const part of request) { body += part; assert.ok(body.length < (historyMode ? 32 : 4) * 1024 * 1024); }
   requests.push(JSON.parse(body));
   if (contextMode && requests.length === 1) {
     response.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -37,14 +38,15 @@ const server = http.createServer(async (request, response) => {
   }
   response.writeHead(200, { 'Content-Type': 'text/event-stream' });
   const text = outputMode && requests.length === 1 ? 'RESUME_FIRST_OK\n' + 'x'.repeat(1024 * 1024 + 512) + '\nNATIVE_HIDDEN_TAIL' : contextMode && requests.length === 2 ? 'COMPACTED_SUMMARY: preserve original task ISOLATED_RESUME_USER_FIRST; continue unfinished work.' : requests.length === 1 ? 'RESUME_FIRST_OK' : 'RESUME_CONTINUED_OK';
-  const item = { id: 'msg_fixture_' + requests.length, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] };
-  for (const event of [
-    { type: 'response.created', response: { id: 'resp_fixture_' + requests.length } },
-    { type: 'response.output_item.added', output_index: 0, item: { ...item, status: 'in_progress', content: [] } },
-    { type: 'response.output_text.delta', item_id: item.id, output_index: 0, content_index: 0, delta: text },
-    { type: 'response.output_item.done', output_index: 0, item },
-    { type: 'response.completed', response: { id: 'resp_fixture_' + requests.length, status: 'completed', output: [item], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
-  ]) response.write('data: ' + JSON.stringify(event) + '\n\n');
+  const output = Array.from({ length: historyMode && requests.length === 1 ? 3 : 1 }, (_, index) => ({ id: 'msg_fixture_' + requests.length + '_' + index, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: historyMode && requests.length === 1 ? text + '\n' + 'x'.repeat(3 * 1024 * 1024) + '\nHISTORY_HIDDEN_TAIL_' + index : text, annotations: [] }] }));
+  const emit = event => response.write('data: ' + JSON.stringify(event) + '\n\n');
+  emit({ type: 'response.created', response: { id: 'resp_fixture_' + requests.length } });
+  for (const [index,item] of output.entries()) {
+    emit({ type: 'response.output_item.added', output_index: index, item: { ...item, status: 'in_progress', content: [] } });
+    emit({ type: 'response.output_text.delta', item_id: item.id, output_index: index, content_index: 0, delta: item.content[0].text });
+    emit({ type: 'response.output_item.done', output_index: index, item });
+  }
+  emit({ type: 'response.completed', response: { id: 'resp_fixture_' + requests.length, status: 'completed', output, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
   response.end();
 });
 const make = () => new Chat({ storage, settings: { sendOperationInstructions: false, memoryMode: 'exclude' },
@@ -56,7 +58,15 @@ const make = () => new Chat({ storage, settings: { sendOperationInstructions: fa
       if (method === 'thread/start') params = { ...params, cwd: workspace };
       if (usageMode && method === 'account/rateLimits/read') return Promise.resolve({ ordinaryUsageAllowed: recovered,
         rateLimits: { limitId: 'codex', primary: { usedPercent: recovered ? 0 : 100, resetsAt: Math.floor(Date.now() / 1000) + 3600 } } });
-      calls.push({ method, params }); return request(method, params, ...rest);
+      calls.push({ method, params });
+      return request(method, params, ...rest).then(value => {
+        if (historyMode && method === 'thread/items/list') {
+          const bytes = Buffer.byteLength(JSON.stringify(value));
+          result.historyFetchedBytes = (result.historyFetchedBytes || 0) + bytes;
+          result.largestHistoryReplyBytes = Math.max(result.largestHistoryReplyBytes || 0, bytes);
+        }
+        return value;
+      });
     };
     return client;
   } });
@@ -71,7 +81,7 @@ let first, second;
 const result = { ok: false, isolatedCodexHome: true, localMockProvider: true, realModelUsed: false, rateLimitApiMocked: usageMode };
 (async () => {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  fs.writeFileSync(path.join(home, 'config.toml'), 'model="gpt-6.1-sol"\nmodel_provider="fixture"\ncli_auth_credentials_store="file"\n[model_providers.fixture]\nname="Fixture"\nbase_url="http://127.0.0.1:' + server.address().port + '/v1"\nwire_api="responses"\nrequires_openai_auth=false\nsupports_websockets=false\nrequest_max_retries=0\nstream_max_retries=0\n');
+  fs.writeFileSync(path.join(home, 'config.toml'), 'model="gpt-6.1-sol"\nmodel_provider="fixture"\ncli_auth_credentials_store="file"\n' + (historyMode ? 'model_context_window=100000000\nmodel_auto_compact_token_limit=100000000\n' : '') + '[model_providers.fixture]\nname="Fixture"\nbase_url="http://127.0.0.1:' + server.address().port + '/v1"\nwire_api="responses"\nrequires_openai_auth=false\nsupports_websockets=false\nrequest_max_retries=0\nstream_max_retries=0\n');
   try {
     first = make(); await connect(first);
     const model = first.models.find(item => item.model === 'gpt-6.1-sol'); assert.ok(model);
@@ -94,6 +104,12 @@ const result = { ok: false, isolatedCodexHome: true, localMockProvider: true, re
     if (usageMode) { assert.ok(second.pause); assert.equal(second.usage.status, 'blocked'); }
     else if (contextMode) assert.equal(second.contextRecovery?.status, 'needed');
     else assert.ok(second.entries.some(entry => entry.role === 'assistant' && entry.text.includes('RESUME_FIRST_OK')));
+    if (historyMode) {
+      assert.ok(result.historyFetchedBytes > 8 * 1024 * 1024); assert.ok(result.largestHistoryReplyBytes < 8 * 1024 * 1024);
+      assert.equal(second.read(0,0).replyOmitted, true); assert.equal(second.historyNotice, '');
+      assert.equal(calls.some(call => call.method === 'thread/turns/list' && call.params.itemsView === 'full'), false);
+      result.largeHistoryRestoredInSmallPages = true;
+    }
     assert.equal(requests.length, 1); assert.equal(calls.some(call => call.method === 'turn/start'), false);
     if (outputMode) { assert.equal(second.read(0, 0).replyOmitted, true); result.longReplyRestoredWithinLimit = true; }
     await second.selectApproval(second.generation, 'inherit');
@@ -115,6 +131,7 @@ const result = { ok: false, isolatedCodexHome: true, localMockProvider: true, re
     const required = contextMode ? ['COMPACTED_SUMMARY', require('../src/context-recovery.cjs').continuation] : usageMode ? ['ISOLATED_RESUME_USER_FIRST', require('../src/usage.cjs').continuation] : ['ISOLATED_RESUME_USER_FIRST', 'RESUME_FIRST_OK', 'ISOLATED_RESUME_USER_CONTINUED'];
     for (const text of required) assert.ok(input.includes(text), text);
     if (outputMode) { assert.ok(input.includes('NATIVE_HIDDEN_TAIL')); assert.equal(calls.some(call => call.method === 'turn/interrupt'), false); result.hiddenOutputRemainsInCodexContext = true; }
+    if (historyMode) { for (let index=0;index<3;index++) assert.ok(input.includes('HISTORY_HIDDEN_TAIL_' + index)); result.fullNativeHistoryPreserved = true; }
     if (!contextMode) assert.equal(input.split('ISOLATED_RESUME_USER_FIRST').length - 1, 1);
     assert.ok(second.entries.some(entry => entry.text.includes('RESUME_CONTINUED_OK')));
     assert.equal(calls.find(call => call.method === 'turn/start').params.sandboxPolicy.type, defaults.sandboxPolicy.type);

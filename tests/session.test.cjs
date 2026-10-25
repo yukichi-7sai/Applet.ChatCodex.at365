@@ -87,7 +87,8 @@ test('実stdio: 状態保存に失敗したらturn/start前に停止し、失敗
 });
 test('履歴は新しい200ターンまで表示し、カーソル循環では復元を中止する', async () => {
   let offset = 0;
-  const history = await readHistory({ request: async () => {
+  const history = await readHistory({ request: async method => {
+    if (method === 'thread/items/list') return { data: [], nextCursor: null };
     const data = Array.from({ length: 20 }, (_, n) => ({ id: String(250 - offset - n), items: [], status: 'completed' }));
     offset += 20; return { data, nextCursor: String(offset) };
   } }, 'fixture');
@@ -99,4 +100,84 @@ test('状態保存が応答しなくても終了待ちを1秒で打ち切る', a
   const chat = new Chat({ storage: {} }); chat.sessions.pending = new Promise(() => {});
   const start = Date.now(); await chat.close();
   assert.ok(Date.now() - start < 1800);
+});
+
+test('履歴は本文なしのターンと項目1件ずつで読み、長い本文を表示用に収める', async () => {
+  const calls = [], long = '文'.repeat(1024 * 1024 + 100);
+  const items = [{ type: 'userMessage', content: [{ type: 'text', text: '最初の依頼' }] },
+    { type: 'mcpToolCall', result: 'ignored private tool result' }, { type: 'agentMessage', text: long }];
+  const history = await readHistory({ request: async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'thread/turns/list') { assert.equal(params.itemsView, 'notLoaded'); return { data: [{ id: 't', status: 'failed' }], nextCursor: null }; }
+    assert.equal(params.limit, 1); assert.equal(params.turnId, 't');
+    const offset = Number(params.cursor || 0), data = [...items].reverse().slice(offset, offset + 1);
+    return { data: data.map(item => ({ turnId: 't', item })), nextCursor: offset < 2 ? String(offset + 1) : null };
+  } }, 'thread');
+  assert.equal(calls.length, 4); assert.equal(history.lastStatus, 'failed');
+  assert.equal(history.turns[0].items.length, 2); assert.equal(history.turns[0].items[0].content[0].text, '最初の依頼');
+  assert.equal(history.turns[0].items[1].text.length, 1024 * 1024); assert.equal(history.turns[0].items[1].truncated, true);
+  assert.equal(JSON.stringify(history).includes('ignored private tool result'), false); assert.equal(items[2].text, long);
+});
+
+test('項目ページング未対応では全文を1ターンずつ取得し、古い保存方式でも復元する', async () => {
+  const full = [], history = await readHistory({ request: async (method, params) => {
+    if (method === 'thread/items/list') throw Object.assign(Error('unsupported'), { code: -32601 });
+    if (params.itemsView === 'notLoaded') return { data: [{ id: 'new', status: 'completed' }], nextCursor: null };
+    assert.equal(params.limit, 1); full.push(params.cursor);
+    const id = params.cursor ? 'old' : 'new';
+    return { data: [{ id, status: 'completed', items: [{ type: 'agentMessage', text: id }] }], nextCursor: params.cursor ? null : 'older' };
+  } }, 'thread');
+  assert.deepEqual(full, [null, 'older']); assert.deepEqual(history.turns.map(turn => turn.id), ['old', 'new']);
+});
+
+test('履歴の要求件数・表示バイトを制限し、終了後の追加取得と項目カーソル循環を防ぐ', async () => {
+  let calls = 0;
+  const history = await readHistory({ request: async method => {
+    calls++; return method === 'thread/turns/list' ? { data: [{ id: 't', status: 'completed' }] }
+      : { data: [{ turnId: 't', item: { type: 'mcpToolCall' } }], nextCursor: String(calls) };
+  } }, 'thread');
+  assert.equal(calls, 240); assert.equal(history.omitted, true);
+  let canceledCalls = 0;
+  await assert.rejects(readHistory({ request: async () => canceledCalls++ }, 'thread', () => false), /中止/); assert.equal(canceledCalls, 0);
+  await assert.rejects(readHistory({ request: async method => method === 'thread/turns/list' ? { data: [{ id: 't' }] }
+    : { data: [], nextCursor: 'loop' } }, 'thread'), /表示位置/);
+  let offset = 0;
+  const bounded = await readHistory({ request: async method => method === 'thread/turns/list' ? { data: [{ id: 't', status: 'failed' }] }
+    : { data: [{ turnId: 't', item: { type: 'agentMessage', text: '文'.repeat(1024 * 1024) } }], nextCursor: String(++offset) } }, 'thread');
+  assert.equal(bounded.omitted, true); assert.equal(bounded.lastStatus, 'failed');
+  assert.ok(Buffer.byteLength(JSON.stringify(bounded.turns[0].items)) <= 6 * 1024 * 1024);
+});
+
+test('実stdio: 履歴取得だけが失敗しても会話を復元し、次の入力だけを同じ会話へ送る', async t => {
+  const c = fixture(t), first = c.make(); await connect(first); await send(first, '履歴がない表示の試験'); await first.close();
+  const state = JSON.parse(fs.readFileSync(c.file)); state.historyMode = 'unavailable'; fs.writeFileSync(c.file, JSON.stringify(state));
+  const saved = structuredClone(c.values.get('lastSession')); c.calls.length = 0;
+  const second = c.make(); await connect(second); assert.equal(second.state, 'idle', second.detail);
+  assert.equal(second.threadId, saved.threadId); assert.match(second.historyNotice, /表示を省略/); assert.equal(second.entries.length, 0);
+  assert.deepEqual(c.values.get('lastSession'), saved); assert.equal(c.calls.some(call => ['thread/start','turn/start'].includes(call.method)), false);
+  await send(second, '確認してから続きを進めてください');
+  assert.equal(second.threadId, saved.threadId); assert.equal(c.calls.filter(call => call.method === 'turn/start').length, 1);
+});
+
+test('実stdio: 巨大な履歴で切断した後は、明示操作だけで本文なしの復元を行う', async t => {
+  const c = fixture(t), first = c.make(); await connect(first); await send(first, '巨大履歴の復旧試験'); await first.close();
+  const state = JSON.parse(fs.readFileSync(c.file)); state.historyMode = 'oversized'; fs.writeFileSync(c.file, JSON.stringify(state));
+  const saved = structuredClone(c.values.get('lastSession')); c.calls.length = 0;
+  const second = c.make(); await connect(second); assert.equal(second.state, 'error');
+  assert.equal(second.read(0,0).canRestoreWithoutHistory, true); assert.deepEqual(c.values.get('lastSession'), saved);
+  const old = second.generation; assert.throws(() => second.connect(old-1, true));
+  c.calls.length = 0; second.connect(old, true); await until(() => ['idle','error'].includes(second.state));
+  assert.equal(second.state, 'idle', second.detail); assert.equal(second.threadId, saved.threadId); assert.match(second.historyNotice, /表示を省略/);
+  assert.equal(c.calls.some(call => ['thread/items/list','thread/turns/list','turn/start','thread/start'].includes(call.method)), false);
+  assert.deepEqual(c.values.get('lastSession'), saved); await send(second, '実行結果を確認して続行してください');
+  assert.equal(second.threadId, saved.threadId);
+});
+
+test('実stdio: 会話自体が活動中・消失・別保存先なら本文なしの復元も許可しない', async t => {
+  const c = fixture(t), first = c.make(); await connect(first); await send(first, '活動中の復元禁止'); await first.close();
+  const state = JSON.parse(fs.readFileSync(c.file)), saved = structuredClone(c.values.get('lastSession'));
+  state.threads[saved.threadId].status = { type: 'active' }; fs.writeFileSync(c.file, JSON.stringify(state));
+  const second = c.make(); await connect(second); assert.equal(second.state, 'error');
+  assert.equal(second.read(0,0).canRestoreWithoutHistory, false); assert.throws(() => second.connect(second.generation, true));
+  assert.deepEqual(c.values.get('lastSession'), saved);
 });

@@ -1,6 +1,6 @@
 # ChatCodex Applet 初期設計
 
-状態: 0.6.3の実装仕様。初期設計の作成日: 2026-10-25。初期設計は実装前にコミット済み。
+状態: 0.6.4の実装仕様。初期設計の作成日: 2026-10-25。初期設計は実装前にコミット済み。
 
 第13節は将来構想であり、現在の実装仕様・利用可能な機能とは区別する。
 
@@ -118,7 +118,7 @@ Codex CLIの別途導入を前提とし、ChatGPTアプリだけの導入は対�
 
 1. `initialize` → 応答確認 → `initialized`。実験APIは有効化しない。
 2. `account/read` で認証状態、`model/list` で候補を確認する。
-3. 再開参照があれば `thread/resume`（excludeTurns:true）と `thread/turns/list`（itemsView:full、降順ページング）で復元する。復元だけでは `turn/start` を呼ばない。参照がなければ最初の送信で `thread/start`。
+3. 再開参照があれば `thread/resume`（excludeTurns:true）で会話の接続・cwd・待機状態を確認する。表示は `thread/turns/list`（itemsView:notLoaded）と `thread/items/list` の分割取得で別に読む。復元だけでは `turn/start` を呼ばない。参照がなければ最初の送信で `thread/start`。
 4. `turn/start` に入力と選択したモデル・思考量を渡す。
 5. 通知で途中表示・操作状態・確認要求を更新し、`turn/completed` で終了する。
 6. 停止は `turn/interrupt`。受付と実際の終了を分け、終了通知まで「停止中」とする。
@@ -144,6 +144,7 @@ Codex wireは独自のJSON-RPC形式で、本体用JsonLinePeerの転用はし�
 | `chat.compact` | generation / requestId / recoveryId。停止した会話の手動圧縮を受け付ける |
 | `chat.context-continue` | generation / requestId / recoveryId。圧縮完了後の明示的な続行を受け付ける |
 | `chat.handoff` | generation / recoveryId。保持済み本文の抜粋を新しい会話の編集可能な下書きとして返す |
+| `chat.restore-light` | generation。履歴表示で通信が切れた会話を、明示操作で本文取得なしに再接続・復元する |
 
 引数は宣言したstring/number/booleanのみとする。思考量の指定なしは空文字を内部値へ変換する。質問への構造化回答は小さなJSON文字列で受け、Appletでその質問の型と選択肢に照合する。任意RPCのmethodやCodex要求全体を画面から渡せる入口にはしない。
 
@@ -211,7 +212,13 @@ PC専用Storageの `preferences` に `{schemaVersion:1, model, effort, approvalM
 
 turn/start前に参照とinFlight:trueの保存完了を待ち、完了通知後にfalseを直列保存する。保存失敗では送信を止め、自動再送しない。終了中は保存待ちと所有プロセスの終了を並行して行う。復元時は保存したcwd・開始オプション・元の継承権限を使い、操作指示オンなら現在の起動元instanceIdで指示を更新する。別CODEX_HOME・未知版・履歴消失・未対応API・活動中の会話では勝手に別会話へ切り替えない。
 
-履歴は新しい200ターン・取得データ約6MiBまで、20ターンずつ降順で読み、時系列へ戻してuserMessageとagentMessageだけを表示する。取得は最大20ページとし、循環カーソルは拒否する。古い表示の省略はCodex側の文脈を削除しない。inFlight:trueまたは未完了ターンがあれば結果確認を促し、過去の入力・承認回答を再送しない。再開参照がない旧版の会話を推測して選ばない。非保存の試験スレッドは再開参照へ記録しない。
+履歴は新しい最大200ターン・表示データ約6MiBまでを読む。ターンは20件ずつitemsView:notLoadedで取得し、項目はturnIdを照合して1件ずつ降順に読む。userMessage／agentMessageだけを残し、長い返答は共有の表示整形で1Mi UTF-16へ収め、省略印を保持する。時系列へ戻して画面へ渡す。旧方式で項目APIがRPC拒否された場合は、同じ会話のfullを1ターンずつ読む代替経路へ1回だけ切り替える。
+
+履歴の要求は両経路の合計最大240回・全体15秒、各要求は残り時間内かつ最大5秒。件数・表示量・全体時間の上限では取得済みの表示だけを返し、省略を案内する。カーソル循環・不正形式を拒否し、終了・世代変更後は追加取得しない。最新ターンのstatusは表示を省略しても別に保持し、inFlight:true／未完了なら結果確認を促す。本文や承認回答は再送しない。
+
+会話そのものの復元と履歴表示を分離する。thread/resumeの対象・非ephemeral・cwd・idleを確認でき、接続も生きている場合は、履歴表示の失敗だけで会話を使えなくせず、historyNoticeで表示省略と結果確認を案内する。保存参照を変更しない。巨大な応答等で接続が閉じた場合だけ、canRestoreWithoutHistoryで固定操作を提示する。操作時は新しい接続で同じ保存参照・scope・cwd・待機状態を再確認し、履歴取得なしで復元する。自動再接続・自動送信はしない。
+
+本文なし復元の選択は現在の接続だけへ適用し、設定／保存キー／履歴ファイルは追加しない。新しい会話で案内を解除する。会話の消失・保存先不一致・活動中等、thread/resume自体の失敗をこの操作で回避しない。再開参照がない旧版の会話を推測して選ばず、非保存の試験スレッドも再開参照へ記録しない。
 
 Appletが独自の会話履歴ファイルや認証ファイルを作ることはない。ただしCodex自身の会話保存はCodex設定に従うため、履歴が一切ディスクへ残らない機能とは説明しない。
 

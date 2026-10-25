@@ -109,6 +109,9 @@ function renderContext(valid) {
 }
 function renderControls() {
   if (!state) return;
+  $('history-note').textContent = state.historyNotice || ''; $('history-note').hidden = !state.historyNotice;
+  $('restore-light').hidden = !state.canRestoreWithoutHistory;
+  $('restore-light').disabled = performing || state.state !== 'error';
   const selected = draftSelection || state.selection;
   $('model').replaceChildren(option('', 'モデルを選択'));
   for (const model of state.models) $('model').append(option(model.model, model.name));
@@ -291,6 +294,7 @@ $('composer').addEventListener('submit', event => {
 });
 $('new-chat').addEventListener('click', () => void perform(async () => { await call('chat.new'); $('input').value = ''; }));
 $('connect').addEventListener('click', () => void perform(() => call('chat.connect')));
+$('restore-light').addEventListener('click', () => void perform(() => call('chat.restore-light')));
 $('usage-check').addEventListener('click', () => void perform(() => call('chat.usage')));
 $('usage-resume').addEventListener('click', () => void perform(() => call('chat.resume', { requestId: crypto.randomUUID(), pauseId: state.usage?.pauseId })));
 $('context-compact').addEventListener('click', () => void perform(() => call('chat.compact', { requestId: crypto.randomUUID(), recoveryId: state.contextRecovery?.id })));

@@ -4,7 +4,7 @@ const { CodexProcess } = require('./codex-process.cjs');
 const { modes, validMode, threadDefaults, turnPolicy } = require('./approval-modes.cjs');
 const { normalizeSettings, startupOptions, threadConfig } = require('./chat-settings.cjs');
 const { format, wireView } = require('./diagnostics.cjs');
-const { SessionStore, scopeFor, readHistory } = require('./session.cjs');
+const { SessionStore, scopeFor, readHistory, replyText } = require('./session.cjs');
 const { continuation, limitReason, usageSnapshot } = require('./usage.cjs');
 const { continuation: contextContinuation, isContextLimit, handoffDraft } = require('./context-recovery.cjs');
 const busy = new Set(['connecting', 'running', 'awaitingInput', 'stopping', 'saving', 'compacting']);
@@ -12,10 +12,6 @@ const textLimit = 32768;
 const replyLimit = 1024 * 1024;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const short = (value, max = 4000) => typeof value === 'string' ? value.slice(0, max) : '';
-function replyText(text, limit = replyLimit) {
-  const shown = text.slice(0, limit);
-  return text.length > limit && /[\uD800-\uDBFF]$/.test(shown) ? shown.slice(0, -1) : shown;
-}
 
 function modelsFrom(data) {
   if (!Array.isArray(data)) throw Error('Codexのモデル一覧形式に対応していません。');
@@ -51,6 +47,7 @@ class Chat {
     this.saving = false;
     this.pause = null; this.usage = null; this.usageOperation = null;
     this.contextRecovery = null; this.compactAccepted = new Map(); this.nextCwd = null;
+    this.canRestoreWithoutHistory = false; this.historyNotice = '';
     this.settings = normalizeSettings(settings);
     this.resetDiagnostics();
   }
@@ -158,6 +155,7 @@ class Chat {
       usage: this.pause ? { pauseId: this.pause.id, kind: this.pause.kind, canContinue: this.pause.canContinue, ...(this.usage || { status: 'unknown', windows: [], nextReset: null }), checking: !!this.usageOperation } : null,
       contextRecovery: this.contextRecovery,
       replyOmitted: this.entries.some(entry => entry.truncated),
+      canRestoreWithoutHistory: this.state === 'error' && this.canRestoreWithoutHistory, historyNotice: this.historyNotice,
       displayMode: this.settings.displayMode,
       wireLogEnabled: this.settings.wireLogEnabled,
       diagnosticsOmitted: { detail: this.diagnostics.detail.omitted, trace: this.diagnostics.trace.omitted },
@@ -182,8 +180,9 @@ class Chat {
   assertGeneration(generation) {
     if (this.closed || generation !== this.generation) throw Error('会話が切り替わりました。表示を更新してください。');
   }
-  connect(generation) {
+  connect(generation, withoutHistory = false) {
     this.assertGeneration(generation);
+    if (withoutHistory && (!this.canRestoreWithoutHistory || this.state !== 'error')) throw Error('会話の復元状態を確認してください。');
     if (busy.has(this.state) || this.state === 'idle') return { accepted: true };
     const epoch = ++this.generation;
     this.connectionEpoch = epoch;
@@ -193,11 +192,12 @@ class Chat {
     this.session = null; this.sessionNotice = ''; this.preferenceWarning = '';
     this.pause = null; this.usage = null; this.usageOperation = null;
     this.contextRecovery = null; this.compactAccepted.clear(); this.nextCwd = null;
+    this.canRestoreWithoutHistory = false; this.historyNotice = '';
     this.state = 'connecting'; this.detail = 'Codexに接続しています。'; this.touch();
-    void this.connectAsync(epoch);
+    void this.connectAsync(epoch, withoutHistory);
     return { accepted: true };
   }
-  async connectAsync(epoch) {
+  async connectAsync(epoch, withoutHistory) {
     let client;
     try {
       await this.client?.close();
@@ -254,7 +254,7 @@ class Chat {
       }
       const savedSession = await this.sessions.load();
       if (this.closed || epoch !== this.generation) return;
-      if (savedSession) await this.restore(savedSession, epoch);
+      if (savedSession) await this.restore(savedSession, epoch, withoutHistory);
       if (this.closed || epoch !== this.generation) return;
       this.state = 'idle';
       this.detail = this.preferenceWarning || (this.validSelection() ? '' : '利用できるモデルと思考量を選んでください。');
@@ -277,7 +277,7 @@ class Chat {
     return options.sendOperationInstructions ? 'AppDockの操作を支援するチャットです。設定の操作には既存のAppDock MCPだけを使い、settings.jsonを直接編集しないでください。対象instanceIdは ' +
       this.hostInstanceId + ' です。MCPの情報取得で一致を確認してから操作してください。一致する接続がなければ操作せず説明してください。設定・コマンドのスキーマと現在のrevisionを取得し、必要なdryRun、保存、結果確認を行ってください。失敗・結果不明の操作を自動再送しないでください。' : undefined;
   }
-  async restore(session, epoch) {
+  async restore(session, epoch, withoutHistory = false) {
     this.detail = '最後のチャットを復元しています。'; this.touch();
     if (session.scope !== scopeFor(this.client.env)) throw Error('保存した会話のCodex保存先が現在と異なります。「新しいチャット」で開始し直せます。');
     const developerInstructions = this.operationInstructions(session.options);
@@ -287,8 +287,19 @@ class Chat {
         ...threadConfig(session.options), ...(developerInstructions ? { developerInstructions } : {}) });
       if (response?.thread?.id !== session.threadId || response.thread.ephemeral || response.cwd !== session.cwd || response.thread.status?.type !== 'idle')
         throw Error('Unexpected resume state');
-      history = await readHistory(this.client, session.threadId);
     } catch { throw Error('保存したチャットを復元できません。Codexの履歴・対応版を確認して再接続するか、「新しいチャット」で開始し直してください。自動再送していません。'); }
+    if (this.closed || epoch !== this.generation) return;
+    history = { turns: [], omitted: true, unavailable: true };
+    if (!withoutHistory) {
+      try { history = await readHistory(this.client, session.threadId, () => !this.closed && epoch === this.generation); }
+      catch {
+        if (this.closed || epoch !== this.generation) return;
+        if (this.client.closed) {
+          this.canRestoreWithoutHistory = true;
+          throw Error('保存した会話の履歴表示を読み込めませんでした。履歴の表示を省略して復元するか、再接続してください。自動再送していません。');
+        }
+      }
+    }
     if (this.closed || epoch !== this.generation) return;
     this.threadId = session.threadId; this.threadDefaults = session.defaults; this.threadOptions = session.options;
     this.session = session;
@@ -304,12 +315,13 @@ class Chat {
         this.entry('user', text);
       } else if (item.type === 'agentMessage' && typeof item.text === 'string') {
         const shown = replyText(item.text), parts = this.entry('assistant', shown);
-        if (shown.length < item.text.length) parts.at(-1).truncated = true;
+        if (item.truncated || shown.length < item.text.length) parts.at(-1).truncated = true;
       }
     }
     this.omitted ||= history.omitted;
-    const lastStatus = history.turns.at(-1)?.status;
-    const uncertain = session.inFlight || lastStatus && !['completed', 'failed', 'interrupted'].includes(lastStatus);
+    this.historyNotice = history.unavailable ? '会話は復元しましたが、過去のメッセージの表示を省略しています。操作結果を確認してから続きを送信してください。' : '';
+    const lastStatus = history.lastStatus ?? history.turns.at(-1)?.status;
+    const uncertain = history.unavailable || session.inFlight || lastStatus && !['completed', 'failed', 'interrupted'].includes(lastStatus);
     this.sessionNotice = uncertain
       ? '最後のチャットを復元しました。前回の処理は途中で終了した可能性があります。操作結果を確認してから続きを送信してください。自動再送していません。'
       : ['failed', 'interrupted'].includes(lastStatus)
@@ -660,6 +672,7 @@ class Chat {
     this.session = null; this.sessionNotice = '';
     this.pause = null; this.usage = null; this.usageOperation = null;
     this.contextRecovery = null; this.compactAccepted.clear(); this.nextCwd = null;
+    this.canRestoreWithoutHistory = false; this.historyNotice = '';
     if (reconnect) { this.state = 'disconnected'; this.connect(this.generation); }
     return { accepted: true };
   }
