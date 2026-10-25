@@ -9,7 +9,8 @@ const usageMode = process.argv.includes('--usage');
 const contextMode = process.argv.includes('--context');
 const outputMode = process.argv.includes('--output');
 const historyMode = process.argv.includes('--history');
-const root = path.resolve(__dirname, '..'), folder = path.join(root, '.artifacts', (historyMode ? 'history-probe-' : outputMode ? 'output-probe-' : contextMode ? 'context-probe-' : usageMode ? 'usage-probe-' : 'resume-probe-') + Date.now());
+const recoverMode = process.argv.includes('--recover');
+const root = path.resolve(__dirname, '..'), folder = path.join(root, '.artifacts', (recoverMode ? 'recover-probe-' : historyMode ? 'history-probe-' : outputMode ? 'output-probe-' : contextMode ? 'context-probe-' : usageMode ? 'usage-probe-' : 'resume-probe-') + Date.now());
 const home = path.join(folder, 'codex-home'), workspace = path.join(folder, 'workspace'), storageFile = path.join(folder, 'storage.json');
 fs.mkdirSync(home, { recursive: true }); fs.mkdirSync(workspace, { recursive: true });
 const command = resolveCodex(), calls = [], requests = [];
@@ -97,7 +98,9 @@ const result = { ok: false, isolatedCodexHome: true, localMockProvider: true, re
       assert.ok(first.entries.filter(entry => entry.role === 'assistant').reduce((sum, entry) => sum + entry.text.length, 0) <= 1024 * 1024);
       result.longReplyContinuedWithoutInterrupt = true;
     }
-    await first.close(); calls.length = 0;
+    await first.close();
+    if (recoverMode) { const saved = await storage.get('lastSession'); saved.inFlight = true; await storage.set('lastSession', saved); }
+    calls.length = 0;
     second = make(); await connect(second);
     assert.equal(second.threadId, threadId); assert.deepEqual(second.threadDefaults, defaults);
     assert.ok(second.entries.some(entry => entry.role === 'user' && entry.text.includes('ISOLATED_RESUME_USER_FIRST')));
@@ -125,10 +128,19 @@ const result = { ok: false, isolatedCodexHome: true, localMockProvider: true, re
       second.continueContext(second.generation, 'continued', second.contextRecovery.id);
       await until(() => !second.contextRecovery && second.state === 'idle');
       result.compactionCompletedAndRestored = true;
+    } else if (recoverMode) {
+      assert.ok(second.interruption); assert.equal(requests.length, 1);
+      const id = second.interruption.id;
+      second.recover(second.generation, 'continued', id); second.recover(second.generation, 'continued', id);
+      await until(() => !second.interruption && second.state === 'idle');
+      second.recover(second.generation, 'continued', id);
+      assert.equal(calls.filter(call => call.method === 'thread/read').length, 1);
+      assert.equal(calls.filter(call => call.method === 'turn/start').length, 1);
+      result.freshIdleStateChecked = true; result.manualRecoveryOnce = true;
     } else await send(second, 'continued', 'ISOLATED_RESUME_USER_CONTINUED');
     assert.equal(second.threadId, threadId); assert.equal(requests.length, contextMode ? 3 : 2);
     const input = JSON.stringify(requests.at(-1).input);
-    const required = contextMode ? ['COMPACTED_SUMMARY', require('../src/context-recovery.cjs').continuation] : usageMode ? ['ISOLATED_RESUME_USER_FIRST', require('../src/usage.cjs').continuation] : ['ISOLATED_RESUME_USER_FIRST', 'RESUME_FIRST_OK', 'ISOLATED_RESUME_USER_CONTINUED'];
+    const required = recoverMode ? ['ISOLATED_RESUME_USER_FIRST', 'RESUME_FIRST_OK', require('../src/session.cjs').recoveryContinuation] : contextMode ? ['COMPACTED_SUMMARY', require('../src/context-recovery.cjs').continuation] : usageMode ? ['ISOLATED_RESUME_USER_FIRST', require('../src/usage.cjs').continuation] : ['ISOLATED_RESUME_USER_FIRST', 'RESUME_FIRST_OK', 'ISOLATED_RESUME_USER_CONTINUED'];
     for (const text of required) assert.ok(input.includes(text), text);
     if (outputMode) { assert.ok(input.includes('NATIVE_HIDDEN_TAIL')); assert.equal(calls.some(call => call.method === 'turn/interrupt'), false); result.hiddenOutputRemainsInCodexContext = true; }
     if (historyMode) { for (let index=0;index<3;index++) assert.ok(input.includes('HISTORY_HIDDEN_TAIL_' + index)); result.fullNativeHistoryPreserved = true; }

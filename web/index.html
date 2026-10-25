@@ -22,6 +22,12 @@
     <p id="session-note" data-testid="session-note" role="status" hidden></p>
     <p id="history-note" data-testid="history-note" role="status" hidden></p>
     <button id="restore-light" data-testid="restore-light" type="button" hidden>履歴の表示を省略して復元</button>
+    <section id="recovery-panel" data-testid="recovery-panel" aria-labelledby="recovery-title" hidden>
+      <h2 id="recovery-title">前回の作業を確認して続行</h2>
+      <p>会話が待機中か確認してから、現在の状態を調べ、未完了と確認できる作業だけを続ける依頼を送ります。</p>
+      <p id="recovery-status" data-testid="recovery-status" role="status"></p>
+      <button id="recover" data-testid="recover" type="button">状態を確認して続行</button>
+    </section>
     <p id="reply-note" data-testid="reply-note" role="status" hidden>長い返答の表示を一部省略しています。Codexの作業は継続できます。</p>
     <section id="usage-panel" data-testid="usage-panel" aria-labelledby="usage-title" hidden>
       <h2 id="usage-title"></h2>

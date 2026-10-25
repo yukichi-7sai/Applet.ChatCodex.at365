@@ -58,6 +58,13 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     const id = 'thread-' + ++thread;
     saved.threads[id] = { id, cwd: msg.params.cwd, turns: [], ephemeral: msg.params.ephemeral === true, status: { type: 'idle' } }; persist();
     result = { thread: saved.threads[id], cwd: msg.params.cwd, approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: { type: 'readOnly', networkAccess: false } };
+  } else if (msg.method === 'thread/read') {
+    const mode = stateFile && fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')).recoveryRead : undefined;
+    if (mode === 'error') return send({ id: msg.id, error: { code: -32601, message: 'Fixture state unavailable' } });
+    const record = saved.threads[msg.params.threadId];
+    if (!record) return send({ id: msg.id, error: { code: -32600, message: 'Missing fixture thread' } });
+    result = { thread: { id: mode === 'wrong' ? 'other-thread' : record.id, cwd: mode === 'cwd' ? record.cwd + '-other' : record.cwd, ephemeral: record.ephemeral, status: { type: ['active','notLoaded','systemError'].includes(mode) ? mode : 'idle' }, turns: [] } };
+    if (mode === 'slow') { setTimeout(() => send({ id: msg.id, result }), 1500); return; }
   } else if (msg.method === 'thread/resume') {
     const record = saved.threads[msg.params.threadId];
     if (!record) return send({ id: msg.id, error: { code: -32600, message: 'missing fixture thread' } });
@@ -108,7 +115,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     saved.threads[current.thread]?.turns.push({ id: current.turn, status: 'inProgress', items: [{ type: 'userMessage', content: [{ type: 'text', text }] }] }); persist();
     send({ id: msg.id, result: { turn: { id: current.turn, status: 'inProgress' } } });
     notify('turn/started', { threadId: current.thread, turn: { id: current.turn, status: 'inProgress' } });
-    if (text.includes('コンテキスト制限')) timer = setTimeout(() => failTurn('contextWindowExceeded'), 30);
+    if (text.includes('切断再開テスト')) timer = setTimeout(() => process.exit(0), 30);
+    else if (text.includes('コンテキスト制限')) timer = setTimeout(() => failTurn('contextWindowExceeded'), 30);
     else if (text.includes('利用枠制限') || text.includes('一時制限')) {
       saved.usage = { ordinaryUsageAllowed: false, rateLimits: { limitId: 'codex', rateLimitReachedType: 'rate_limit_reached',
         primary: { usedPercent: 100, resetsAt: text.includes('時刻不明') ? null : Math.floor(Date.now() / 1000) + 3600, windowDurationMins: 300 } } }; persist();

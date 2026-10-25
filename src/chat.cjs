@@ -4,10 +4,10 @@ const { CodexProcess } = require('./codex-process.cjs');
 const { modes, validMode, threadDefaults, turnPolicy } = require('./approval-modes.cjs');
 const { normalizeSettings, startupOptions, threadConfig } = require('./chat-settings.cjs');
 const { format, wireView } = require('./diagnostics.cjs');
-const { SessionStore, scopeFor, readHistory, replyText } = require('./session.cjs');
+const { SessionStore, scopeFor, readHistory, replyText, recoveryContinuation } = require('./session.cjs');
 const { continuation, limitReason, usageSnapshot } = require('./usage.cjs');
 const { continuation: contextContinuation, isContextLimit, handoffDraft } = require('./context-recovery.cjs');
-const busy = new Set(['connecting', 'running', 'awaitingInput', 'stopping', 'saving', 'compacting']);
+const busy = new Set(['connecting', 'running', 'awaitingInput', 'stopping', 'saving', 'compacting', 'checkingRecovery']);
 const textLimit = 32768;
 const replyLimit = 1024 * 1024;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -48,6 +48,7 @@ class Chat {
     this.pause = null; this.usage = null; this.usageOperation = null;
     this.contextRecovery = null; this.compactAccepted = new Map(); this.nextCwd = null;
     this.canRestoreWithoutHistory = false; this.historyNotice = '';
+    this.interruption = null; this.recoveryOperation = null;
     this.settings = normalizeSettings(settings);
     this.resetDiagnostics();
   }
@@ -156,6 +157,7 @@ class Chat {
       contextRecovery: this.contextRecovery,
       replyOmitted: this.entries.some(entry => entry.truncated),
       canRestoreWithoutHistory: this.state === 'error' && this.canRestoreWithoutHistory, historyNotice: this.historyNotice,
+      interruption: this.interruption ? { ...this.interruption, checking: !!this.recoveryOperation } : null,
       displayMode: this.settings.displayMode,
       wireLogEnabled: this.settings.wireLogEnabled,
       diagnosticsOmitted: { detail: this.diagnostics.detail.omitted, trace: this.diagnostics.trace.omitted },
@@ -193,6 +195,7 @@ class Chat {
     this.pause = null; this.usage = null; this.usageOperation = null;
     this.contextRecovery = null; this.compactAccepted.clear(); this.nextCwd = null;
     this.canRestoreWithoutHistory = false; this.historyNotice = '';
+    this.interruption = null; this.recoveryOperation = null;
     this.state = 'connecting'; this.detail = 'Codexに接続しています。'; this.touch();
     void this.connectAsync(epoch, withoutHistory);
     return { accepted: true };
@@ -322,6 +325,7 @@ class Chat {
     this.historyNotice = history.unavailable ? '会話は復元しましたが、過去のメッセージの表示を省略しています。操作結果を確認してから続きを送信してください。' : '';
     const lastStatus = history.lastStatus ?? history.turns.at(-1)?.status;
     const uncertain = history.unavailable || session.inFlight || lastStatus && !['completed', 'failed', 'interrupted'].includes(lastStatus);
+    if (uncertain || ['failed', 'interrupted'].includes(lastStatus)) this.interruption = { id: randomUUID(), note: '' };
     this.sessionNotice = uncertain
       ? '最後のチャットを復元しました。前回の処理は途中で終了した可能性があります。操作結果を確認してから続きを送信してください。自動再送していません。'
       : ['failed', 'interrupted'].includes(lastStatus)
@@ -329,6 +333,41 @@ class Chat {
         : '最後のチャットを復元しました。そのまま続きを送信できます。';
     if (this.pause) this.sessionNotice = '最後のチャットを復元しました。利用制限で停止した作業があります。';
     else if (this.contextRecovery) this.sessionNotice = '最後のチャットを復元しました。長くなった会話の復旧状態を引き継いでいます。';
+  }
+  recover(generation, requestId, recoveryId) {
+    this.assertGeneration(generation);
+    if (typeof requestId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(requestId)) throw Error('送信IDが不正です。');
+    const fingerprint = createHash('sha256').update(recoveryContinuation).digest('hex');
+    if (this.accepted.get(requestId) === fingerprint) return { accepted: true };
+    if (this.accepted.has(requestId)) throw Error('同じ送信IDを別の操作には使えません。');
+    if (this.recoveryOperation?.requestId === requestId && this.recoveryOperation.recoveryId === recoveryId) return { accepted: true };
+    if (this.interruption?.id !== recoveryId || this.state !== 'idle' || this.saving || this.usageOperation || this.pause || this.contextRecovery || !this.threadId || !this.session || !this.validSelection())
+      throw Error('復元した会話・接続・モデルと、ほかの停止理由を確認してください。');
+    const operation = { generation, requestId, recoveryId, threadId: this.threadId };
+    this.recoveryOperation = operation; this.state = 'checkingRecovery'; this.detail = '会話の状態を確認しています。'; this.touch();
+    void this.queryRecovery(operation);
+    return { accepted: true };
+  }
+  async queryRecovery(operation) {
+    const current = () => !this.closed && this.recoveryOperation === operation && this.generation === operation.generation && this.threadId === operation.threadId && this.interruption?.id === operation.recoveryId && this.state === 'checkingRecovery';
+    try {
+      const response = await this.client.request('thread/read', { threadId: operation.threadId }, 10000);
+      if (!current()) return;
+      if (response?.thread?.id !== operation.threadId || response.thread.ephemeral || response.thread.cwd !== this.session.cwd || scopeFor(this.client.env) !== this.session.scope || response.thread.status?.type !== 'idle') {
+        this.interruption.note = '同じ会話・作業場所で待機中であることを確認できません。接続先や別の処理を確認してから、もう一度お試しください。';
+        return;
+      }
+      this.recoveryOperation = null; this.state = 'idle';
+      this.send(operation.generation, operation.requestId, recoveryContinuation);
+    } catch {
+      if (!this.closed && this.generation === operation.generation && this.interruption?.id === operation.recoveryId && ['checkingRecovery','idle'].includes(this.state)) {
+        this.interruption.note = '会話の状態を確認できませんでした。接続を確認してから、もう一度お試しください。依頼は送信していません。';
+        this.recoveryOperation = null; this.state = 'idle'; this.detail = '';
+      }
+    } finally {
+      if (current()) { this.recoveryOperation = null; this.state = 'idle'; this.detail = ''; }
+      this.touch();
+    }
   }
   compact(generation, requestId, recoveryId) {
     this.assertGeneration(generation);
@@ -479,7 +518,8 @@ class Chat {
     this.accepted.set(requestId, fingerprint);
     if (this.accepted.size > 128) this.accepted.delete(this.accepted.keys().next().value);
     this.entry('user', text);
-    if ((this.pause || this.contextRecovery) && this.sessionNotice) this.sessionNotice = '最後のチャットを復元しました。';
+    if ((this.pause || this.contextRecovery || this.interruption) && this.sessionNotice) this.sessionNotice = '最後のチャットを復元しました。';
+    this.interruption = null;
     this.pause = null; this.usage = null;
     if (this.session) delete this.session.pause;
     this.contextRecovery = null;
@@ -673,6 +713,7 @@ class Chat {
     this.pause = null; this.usage = null; this.usageOperation = null;
     this.contextRecovery = null; this.compactAccepted.clear(); this.nextCwd = null;
     this.canRestoreWithoutHistory = false; this.historyNotice = '';
+    this.interruption = null; this.recoveryOperation = null;
     if (reconnect) { this.state = 'disconnected'; this.connect(this.generation); }
     return { accepted: true };
   }
@@ -680,6 +721,7 @@ class Chat {
     const alreadyFailed = this.state === 'error';
     this.cancelRequests();
     this.run = null;
+    this.recoveryOperation = null;
     if (this.contextRecovery?.status === 'compacting') this.contextRecovery.status = 'unknown';
     for (const entry of this.entries) delete entry.active;
     this.state = 'error'; this.detail = message; this.touch();

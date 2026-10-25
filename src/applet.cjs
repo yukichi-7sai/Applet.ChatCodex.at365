@@ -27,6 +27,7 @@ function createApplet(options = {}) {
         case 'chat.read': return chat.read(input.generation, input.after);
         case 'chat.connect': return chat.connect(input.generation);
         case 'chat.restore-light': return chat.connect(input.generation, true);
+        case 'chat.recover': return chat.recover(input.generation, input.requestId, input.recoveryId);
         case 'chat.select': return chat.select(input.generation, input.model, input.effort);
         case 'chat.approval': return chat.selectApproval(input.generation, input.mode);
         case 'chat.send': return chat.send(input.generation, input.requestId, input.text);
