@@ -1,5 +1,16 @@
 # 調査・検証記録
 
+## 2026-10-29: 情報metadataのコミット前照合
+
+- icon/taglineと版の変更、配置manifest/entry、更新ZIP/feedを先行発行時の入力とSHA256へ照合し一致。本体0.101.9の固定EXEでも既存8Appletの情報表示を確認した。実装入力は不変で、先行の発行・表示試験を再利用し、追加の版更新・再発行は行わない。
+- 共通レビューと再利用判断は`../AppDock.at365/.artifacts/commit-validation-applet-information-20261029/{review,reuse,validation}.json`、stage/commitとGitHub origin/mainの照合結果は同じ場所の`stage.json`・`commits.json`・`push.json`を参照する。先行の検証資料は保持。実サービス・実利用のApplet起動・GitHub Release・実利用deployは今回の検証対象外。
+
+## 2026-10-29: Applet情報のアイコンとキャッチコピー 0.6.7
+
+- main/追跡先とcleanを確認し、通常環境のpull --ff-only後に、manifestの任意表示情報 `icon: terminal` と `tagline: 会話から、作業のその先へ。` を設定。設定・コマンド・保存・権限・最低本体版は変更せず、0.6.6→0.6.7のパッチ更新として関連する版の正本を揃えた。発行前にmetadataと版の差分をレビューし、阻害事項なし。
+- 標準publish.batで40.ARTIFACTへ発行。配置manifest/ZIP内manifest/feedのID・版・icon/tagline、ZIPのサイズ/SHA256を照合し成功。native/.NETはProductVersionも一致。本体0.101.6の固定EXEへ発行物をコピーし、停止状態で情報パネルの表示を確認した。通常のApplet起動や外部サービス・実入力は実行していない。
+- 共通の入力・完全ログ・配布照合は`../AppDock.at365/.artifacts/applet-branding-20261029/`、本体の`VERIFICATION.md`、本repoの`.artifacts/applet-branding-20261029/validation.json`を参照。機能別の標準全回帰は今回実行せず、表示情報と配布の影響に必要な範囲を検証した。既存の再利用資料を保持し、今回の整理による削除なし。コミット/プッシュ/Release/実利用deployは行っていない。
+
 ## 2026-10-25 0.6.6 コミット照合
 
 - 855acd2以降の作業メモの保存・復元・引き継ぎ、必要試験と文書18ファイルを対象に差分を確認した。保存中の操作拒否、保存失敗で旧値保持、世代／会話／メモIDの照合、手動送信までの元の参照保持、JSON／UTF-8上限、時刻範囲、既存の制限・圧縮・切断復旧への影響を確認し、製品修正は不要と判断した。本体や別作業の変更は含めない。
