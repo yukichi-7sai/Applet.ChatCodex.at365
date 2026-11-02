@@ -58,3 +58,7 @@ Node Applet（CommonJS JavaScript）とローカルHTML/JavaScript UI。実行�
 `scripts/resume-probe.cjs --history` は認証なし隔離CODEX_HOMEとローカル模擬モデルで、合計8MiBを超える履歴を項目単位に復元し、同じ会話の次のモデル入力へ表示を省略した末尾も引き継ぐことを確認する。試験用CODEX_HOME内だけで文脈上限を広げ、自動圧縮を避けてページングの試験を分離する。通常の設定は変更しない。GUIは旧保存方式・履歴表示の失敗・巨大応答による切断・明示的な本文なし復元・次の入力の1回だけの送信を確認する。
 
 `scripts/resume-probe.cjs --output` は認証なし隔離CODEX_HOMEとローカル模擬モデルで、1Mi UTF-16を超える返答の表示省略・非中断・再起動後の上限維持・同じ会話の続行を確認する。省略された末尾も次のモデル入力には残ることを検証し、表示上限とCodexの文脈を区別する。GUIは省略案内・明暗／狭幅・再起動・次の送信・新しいチャットでの案内解除を確認する。単体ではdelta／final／復元の境界と、受信1行の上限・分割・正常行の合計量による誤切断防止を確認する。
+
+## テストの共通実行場所
+
+GUI試験のAppDockは[共通実行場所](../AppDock.at365/docs/testing.md#固定配布物の共通実行場所)を使い、本repoの`.artifacts`をprofile保存rootとして明示します。既存の`--test-profile`等で設定・data・必要なextensionsと結果・ログを分離します。固定build出力を使う試験には追加コピーを作りません。

@@ -3,7 +3,8 @@ const fs = require('node:fs'), path = require('node:path'), assert = require('no
 const { execFileSync } = require('node:child_process');
 const { resolveCodex, CodexProcess } = require('../src/codex-process.cjs');
 const root = path.resolve(__dirname, '..'), host = path.resolve(root, '../AppDock.at365');
-const { launch, until, hash } = require(path.join(host, 'scripts/page-test-host.cjs'));
+const { launch: launchHost, until, hash } = require(path.join(host, 'scripts/page-test-host.cjs'));
+const launch = (profile, portable, environment) => launchHost(profile, portable, environment, path.join(root, '.artifacts'));
 const profile = path.join(root, '.artifacts', 'approval-ui-' + Date.now());
 const folder = path.join(profile, 'extensions', 'ChatCodex');
 fs.mkdirSync(folder, { recursive: true });
@@ -36,11 +37,11 @@ settings.host.hardwareAcceleration = false; settings.host.closeToTray = false; s
 settings.globalShortcutCommands = []; settings.gestures.enabled = false;
 settings.updates.checkHostOnStartup = false; settings.updates.checkAppletsOnStartup = false;
 settings.extensions = { 'at365.chatcodex': { enabled: true, settings: { chatDisplayMode: 'detail', wireLogEnabled: true, sendOperationInstructions: false, memoryMode: 'exclude' } } };
-fs.writeFileSync(path.join(profile, 'settings.json'), JSON.stringify(settings));
+fs.writeFileSync(require('../../AppDock.at365/scripts/test-settings.cjs').file(profile), JSON.stringify(settings));
 let instance, page;
 (async () => {
   try {
-    instance = await launch(profile, path.resolve(root, '../../40.ARTIFACT/AppDock.at365/AppDock.at365.exe'));
+    instance = await launch(profile, path.resolve(root, '../../40.ARTIFACT/AppDock.at365/win-unpacked/AppDock.at365.exe'));
     await until(async () => (await instance.main.evaluate(() => window.dock.snapshot())).extensions.find(e => e.id === 'at365.chatcodex')?.state === 'running', 'approval Applet running');
     await instance.main.evaluate(() => window.dock.executeCommand('at365.chatcodex.open'));
     page = await instance.page('/ChatCodex/web/index.html');

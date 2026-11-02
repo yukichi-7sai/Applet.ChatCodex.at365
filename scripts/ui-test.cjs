@@ -2,12 +2,13 @@
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const root = path.resolve(__dirname, '..'), host = path.resolve(root, '../AppDock.at365');
-const { launch, until } = require(path.join(host, 'scripts/page-test-host.cjs'));
+const { launch: launchHost, until } = require(path.join(host, 'scripts/page-test-host.cjs'));
+const launch = (profile, portable, environment) => launchHost(profile, portable, environment, path.join(root, '.artifacts'));
 const settings = require(path.join(host, 'out/main/shared/settings-schema')).createDefaultSettings();
 const profile = path.join(root, '.artifacts', 'ui-' + Date.now());
 const folder = path.join(profile, 'extensions', 'ChatCodex');
 const node = path.join(host, '.tools', 'node', require(path.join(host, 'toolchain.json')).node, 'node.exe');
-const portable = path.resolve(root, '../../40.ARTIFACT/AppDock.at365/AppDock.at365.exe');
+const portable = path.resolve(root, '../../40.ARTIFACT/AppDock.at365/win-unpacked/AppDock.at365.exe');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'out/Applet.ChatCodex.at365/extension.json')));
 fs.mkdirSync(folder, { recursive: true });
 fs.cpSync(process.env.CHATCODEX_TEST_PACKAGE || path.join(root, 'out/Applet.ChatCodex.at365'), folder, { recursive: true });
@@ -23,7 +24,7 @@ settings.host.hardwareAcceleration = false; settings.host.closeToTray = false; s
 settings.globalShortcutCommands = []; settings.gestures.enabled = false;
 settings.updates.checkHostOnStartup = false; settings.updates.checkAppletsOnStartup = false;
 settings.extensions = { 'at365.chatcodex': { enabled: true, settings: { displayMode: 'trace' } } };
-fs.writeFileSync(path.join(profile, 'settings.json'), JSON.stringify(settings));
+fs.writeFileSync(require('../../AppDock.at365/scripts/test-settings.cjs').file(profile), JSON.stringify(settings));
 const checks = [];
 let instance;
 (async () => {
@@ -39,7 +40,7 @@ let instance;
     assert.equal(await page.locator('.message[data-kind="trace"]').count(), 0);
     await instance.save({ extensionId: 'at365.chatcodex', settings: { wireLogEnabled: true } });
     await until(async () => await page.locator('.message[data-kind="trace"]').count() > 0, 'wire enabled with saved legacy display mode');
-    assert.equal(JSON.parse(fs.readFileSync(path.join(profile, 'settings.json'), 'utf8')).extensions['at365.chatcodex'].settings.displayMode, 'trace');
+    assert.equal(JSON.parse(fs.readFileSync(require('../../AppDock.at365/scripts/test-settings.cjs').file(profile), 'utf8')).extensions['at365.chatcodex'].settings.displayMode, 'trace');
     await instance.save({ extensionId: 'at365.chatcodex', settings: { wireLogEnabled: false, chatDisplayMode: 'normal' } });
     await until(async () => {
       const current = await page.evaluate(() => window.appletPage.call('actions.invoke', { id: 'chat.read', input: { generation: 0, after: 0 } }));
