@@ -1,5 +1,12 @@
 # 調査・検証記録
 
+## 2026-11-03 更新リポジトリの宣言（0.6.8）
+
+- コミット前にローカル標準試験75件が再度成功。配布フォルダーとZIPの全15ファイル、ソースmanifestとpackage版、feedのサイズ・SHA256を照合し、実装時の発行物と一致した。コミット前の記録は本体 `.artifacts/commit-validation-catalog-cache-01270/` の chatcodex.log と applets.json。
+
+- `extension.json` に `updateRepository: yukichi-7sai/Applet.ChatCodex.at365` を追加し、package.jsonの版を揃えた。既存のmanifest項目を使う配布メタデータの変更としてパッチ更新した。
+- ローカル標準試験75件と通常発行が成功。ソース、発行フォルダー、update.zip内のmanifestでID・版・更新元が一致し、feedとZIPのサイズ・SHA256を確認した。AppDock 0.127.0の固定EXEで同じ更新元を宣言した停止中Appletを取得前に除外した。証跡は本repoの `.artifacts/manifest-repository/tests.log` と本体の `.artifacts/catalog-cache-01270/applets-verified.json`。GitHub匿名API・実Codexセッションは使用していない。
+
 ## 2026-11-02 Applet共通実行場所のコミット前照合
 
 - 利用者の受け入れとコミット依頼を受け、今回のテスト基盤/開発文書5ファイルをコミット対象として再確認した。変更はGUI/開発テストの起動・隔離設定で、製品コード・標準製品回帰・依存・SDKは不変。実装時の共通ヘルパー52件、8種類のprofile分離と関連するランチャー/GUIの成功ログを照合して再利用した。無関係な製品回帰の一律再実行は追加しない。
