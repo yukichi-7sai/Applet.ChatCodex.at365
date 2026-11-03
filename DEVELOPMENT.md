@@ -51,7 +51,7 @@ Node Applet（CommonJS JavaScript）とローカルHTML/JavaScript UI。実行�
 
 `scripts/resume-probe.cjs --context` は認証なし隔離CODEX_HOMEとローカル模擬モデルで、Responsesのresponse.failedによるcontext_length_exceeded、実CodexのcontextWindowExceeded、手動圧縮のitem完了とturn完了、終了後の完了状態復元、同一会話の明示続行と圧縮後の文脈を確認する。HTTP 400の模擬エラー本文だけではCodexがotherへ分類する場合があるため、文字列の推測判定は追加しない。GUIは圧縮中・失敗・結果不明の復元、停止、再試行、狭幅／明暗表示、引き継ぎ下書きと明示送信までの非送信も確認する。通常の履歴・認証・外部モデルは使わない。
 
-発行先は `A:/40.ARTIFACT/Applet.ChatCodex.at365`。deploy.batは配置先AppDockフォルダーを引数に取り、発行済みのAppletだけをコピーする。配布・実利用先への配置・外部公開はそれぞれ依頼範囲に従う。
+発行先は `A:/40.ARTIFACT/Applet.ChatCodex.at365`。実利用先へ配置する場合はAppDockを完全終了し、発行したAppletフォルダー一式を`extensions/Applet.ChatCodex.at365`へコピーする。配布・実利用先への配置・外部公開はそれぞれ依頼範囲に従う。
 
 `scripts/resume-probe.cjs --recover` は認証なし隔離CODEX_HOMEとローカル模擬モデルで、処理中フラグが残った会話を復元し、thread/readによる最新の待機状態確認と固定継続依頼の1回だけの送信を確認する。実装済み操作の成否は模擬せず、実利用環境のファイル・設定を変更しない。単体／GUIでは実stdioの切断、再接続、活動中／別cwd／確認失敗の拒否、遅れた応答、二重クリック、下書き保持と既存の専用復旧の優先を確認する。
 

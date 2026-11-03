@@ -16,6 +16,4 @@ if (-not (Test-Path -LiteralPath $taskPacker)) { throw 'The existing AppDock upd
 # Use the standard packer without rebuilding or writing into the host repository.
 & $taskPacker --pack applet $taskPackage unused $taskOutput
 if ($LASTEXITCODE -ne 0) { throw 'Applet update packaging failed.' }
-. (Join-Path $taskHostRoot 'scripts\publish-paths.ps1')
-Install-PublishedDeployment $taskRoot $taskOutput
 Write-Output "Published: $taskOutput"
