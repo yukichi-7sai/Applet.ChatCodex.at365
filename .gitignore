@@ -4,3 +4,4 @@
 /out/
 /dist/
 *.tsbuildinfo
+/publish.local.json

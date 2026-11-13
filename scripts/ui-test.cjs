@@ -8,7 +8,7 @@ const settings = require(path.join(host, 'out/main/shared/settings-schema')).cre
 const profile = path.join(root, '.artifacts', 'ui-' + Date.now());
 const folder = path.join(profile, 'extensions', 'ChatCodex');
 const node = path.join(host, '.tools', 'node', require(path.join(host, 'toolchain.json')).node, 'node.exe');
-const portable = path.resolve(root, '../../40.ARTIFACT/AppDock.at365/win-unpacked/AppDock.at365.exe');
+const portable = path.join(require('../../AppDock.at365/scripts/publish-paths.cjs').getPublishDirectory(path.resolve(root, '../AppDock.at365')), 'win-unpacked/AppDock.at365.exe');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'out/Applet.ChatCodex.at365/extension.json')));
 fs.mkdirSync(folder, { recursive: true });
 fs.cpSync(process.env.CHATCODEX_TEST_PACKAGE || path.join(root, 'out/Applet.ChatCodex.at365'), folder, { recursive: true });

@@ -41,7 +41,7 @@ fs.writeFileSync(require('../../AppDock.at365/scripts/test-settings.cjs').file(p
 let instance, page;
 (async () => {
   try {
-    instance = await launch(profile, path.resolve(root, '../../40.ARTIFACT/AppDock.at365/win-unpacked/AppDock.at365.exe'));
+    instance = await launch(profile, path.join(require('../../AppDock.at365/scripts/publish-paths.cjs').getPublishDirectory(path.resolve(root, '../AppDock.at365')), 'win-unpacked/AppDock.at365.exe'));
     await until(async () => (await instance.main.evaluate(() => window.dock.snapshot())).extensions.find(e => e.id === 'at365.chatcodex')?.state === 'running', 'approval Applet running');
     await instance.main.evaluate(() => window.dock.executeCommand('at365.chatcodex.open'));
     page = await instance.page('/ChatCodex/web/index.html');

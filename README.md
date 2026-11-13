@@ -6,4 +6,4 @@ Codex CLIを別途インストールします。発行物の `Applet.ChatCodex.a
 
 ## ビルド方法
 
-AppDockリポジトリを隣に置き、固定Nodeを準備して `dev.bat build` を実行します。`publish.bat` で `A:/40.ARTIFACT/Applet.ChatCodex.at365` へ発行します。詳しくは[開発文書](DEVELOPMENT.md)を参照してください。
+AppDockリポジトリを隣に置き、固定Nodeを準備して `dev.bat build` を実行します。`publish.bat` で `.artifacts/publish` へ発行します。詳しくは[開発文書](DEVELOPMENT.md)を参照してください。

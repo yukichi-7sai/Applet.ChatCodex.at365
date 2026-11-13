@@ -1,5 +1,20 @@
 # 調査・検証記録
 
+## 2026-11-14 コミット前の照合
+
+- 実装完了時に記録した134入力ファイルのSHA256が一致し、別作業の変更と既存stageがないことを確認。
+- 実装時の標準/対象回帰・固定発行物の成功ログと入力を照合して再利用。実行時コード・依存・試験条件に後続変更なし。
+- 発行済み8 ZIPのSHA256も一致し、検証済み配布物を維持。ローカル設定はGit管理外。照合後の変更は本検証記録の追記だけで、製品の追加修正・版更新・再発行なし。
+- 判定・成功ログ・stage/commit treeの照合記録は`.artifacts/commit-validation-publish-paths-20261114/`へ保存。コミットは対象ファイルに限定し、push・Release・実利用先配置は行わない。
+
+## 2026-11-14 発行先のローカル設定と公開記録の整理
+
+- 環境固有の出力先をGit管理外`publish.local.json`へ分離。相対値は設定ファイル基準、未設定時は各repo内`.artifacts/publish`。worktree専用の出力名と既存の明示出力先指定を維持。
+- 公開するコード・文書・検証記録から環境固有の出力名を除去。以前の記録は論理パスへ置換し、元の記録を各repoの`.artifacts/publish-paths-private-20261114/original/`へ保存。Git履歴は変更していない。
+- 0.6.9を発行、終了0。既存単体75項目が成功。update.json/ZIPの版・サイズ・SHA256と全15ファイルを照合。変更した画面試験は発行先の取得のみで、構文確認を実施。
+- 製品API・実行時設定・保存形式・依存の変更なし。必要な発行先/配布検査は本体の`.artifacts/publish-paths-private-20261114/`にも保存。commit/push/外部公開・実利用先配置は未実施。
+
+
 ## 2026-11-03 配置ツール整理のコミット前照合
 
 - 実装時の最終差分と削除状態、試験入力・成功ログ・発行先185ファイルのSHA256を照合した。関連試験6件と構文・参照検査の成功を再利用し、追加の製品回帰・再発行は行っていない。
@@ -7,7 +22,7 @@
 
 ## 2026-11-03 開発用配置スクリプトの除去
 
-- deployment一式と40.ARTIFACT内の配置用スクリプト・記入例・配置先設定を、存在する範囲で削除した。publishから専用コピー処理を外し、開発文書と不要なGit除外規則を整理した。
+- deployment一式と<PUBLISH_ROOT>内の配置用スクリプト・記入例・配置先設定を、存在する範囲で削除した。publishから専用コピー処理を外し、開発文書と不要なGit除外規則を整理した。
 - 差分レビューで既存のビルドと更新ZIP/JSON生成を保持していることを確認した。変更スクリプトの構文・現行の廃止ファイル参照・git diff --checkと、本体を含む全9repoの発行先計算を確認した。発行先の配置ツール以外のファイルは削除前後のSHA256が一致した。
 - 製品コード・manifest・依存・設定/保存仕様と配布payloadは変更していない。開発用配置ツールの整理として製品版更新・再ビルド・再発行なし。製品回帰・GUI・実利用先配置・commit・push・Releaseは実施していない。共通の削除一覧・ハッシュ・検証結果は../AppDock.at365/.artifacts/deploy-removal-20261103/を参照する。過去の検証記録は履歴として保持する。
 
@@ -39,7 +54,7 @@
 ## 2026-10-29: Applet情報のアイコンとキャッチコピー 0.6.7
 
 - main/追跡先とcleanを確認し、通常環境のpull --ff-only後に、manifestの任意表示情報 `icon: terminal` と `tagline: 会話から、作業のその先へ。` を設定。設定・コマンド・保存・権限・最低本体版は変更せず、0.6.6→0.6.7のパッチ更新として関連する版の正本を揃えた。発行前にmetadataと版の差分をレビューし、阻害事項なし。
-- 標準publish.batで40.ARTIFACTへ発行。配置manifest/ZIP内manifest/feedのID・版・icon/tagline、ZIPのサイズ/SHA256を照合し成功。native/.NETはProductVersionも一致。本体0.101.6の固定EXEへ発行物をコピーし、停止状態で情報パネルの表示を確認した。通常のApplet起動や外部サービス・実入力は実行していない。
+- 標準publish.batで<PUBLISH_ROOT>へ発行。配置manifest/ZIP内manifest/feedのID・版・icon/tagline、ZIPのサイズ/SHA256を照合し成功。native/.NETはProductVersionも一致。本体0.101.6の固定EXEへ発行物をコピーし、停止状態で情報パネルの表示を確認した。通常のApplet起動や外部サービス・実入力は実行していない。
 - 共通の入力・完全ログ・配布照合は`../AppDock.at365/.artifacts/applet-branding-20261029/`、本体の`VERIFICATION.md`、本repoの`.artifacts/applet-branding-20261029/validation.json`を参照。機能別の標準全回帰は今回実行せず、表示情報と配布の影響に必要な範囲を検証した。既存の再利用資料を保持し、今回の整理による削除なし。コミット/プッシュ/Release/実利用deployは行っていない。
 
 ## 2026-10-25 0.6.6 コミット照合
@@ -61,7 +76,7 @@
 - 発行前GUI23群成功: `.artifacts/work-note-066/ui-1792914561418/`、隔離profile `.artifacts/ui-1792914562326/`。レビューで保存時刻の不正値とJSONエスケープによる入力サイズ境界を追加確認し、時刻の範囲検証と保存入力32KiB上限へ修正した。単体・実Codexを再実行し、発行後GUIで最終版を照合する。
 - 修正後の最終単体75/75: `.artifacts/work-note-066/test-1792914749724/`。実Codex再確認: `.artifacts/work-note-066/note-1792914765337/`、結果 `.artifacts/note-probe-1792914765738/result.json`。どちらも工程前後の入力一致、完全ログSHA256照合に成功。
 - 最終発行物のGUI23群成功: `.artifacts/work-note-066/ui-1792914780285/`、隔離profile `.artifacts/ui-1792914781141/`。固定AppDock 0.88.2、EXE SHA256 `eb2475b6eb092b733ce21d779a3bcab763a651da18ce9a585932e08403034c45` は試験前後・隔離コピーで一致。手動保存だけではモデル要求なし、未保存編集の通常送信中の保持、再起動で保存済みメモへ戻ること、下書きの明示送信、メモの次の会話への引き継ぎ、明暗・幅360表示を確認。代表画像 `work-note-light.png`／`work-note-narrow-dark.png`／`work-note-handoff.png` を同profileに保存。
-- 0.6.6発行: `.artifacts/work-note-066/publish-1792914778535/`。`A:/40.ARTIFACT/Applet.ChatCodex.at365/update.zip` は51,301 bytes、SHA256 `2f62861c4968cfa21dd3639b6c8da607e0057bbc0ca74c8c24d08ac3b949daaa`。ZIP15ファイル、元ソース14ファイル、独立USAGE、feedの版・サイズ・hashを照合済み。publish成功後の製品修正はない。
+- 0.6.6発行: `.artifacts/work-note-066/publish-1792914778535/`。`<PUBLISH_ROOT>/Applet.ChatCodex.at365/update.zip` は51,301 bytes、SHA256 `2f62861c4968cfa21dd3639b6c8da607e0057bbc0ca74c8c24d08ac3b949daaa`。ZIP15ファイル、元ソース14ファイル、独立USAGE、feedの版・サイズ・hashを照合済み。publish成功後の製品修正はない。
 - `.artifacts/work-note-066/document-check.json` はUTF-8・JS構文30件・相対リンク43件・設定既定値／版一致に成功。差分空白検査成功。`.artifacts/work-note-066/validation.json` は最終単体・実Codex・発行・発行済GUIの入力hash・完全ログ・固定EXEコピーを再照合した記録。
 - 後片付け: `.artifacts/work-note-066/cleanup.json`。テストプロセス残存0。成功48フォルダーは方式ごとの直近3件または既存の検証／コミット再利用資料の参照として保護し、状態不明7件も保持。削除候補・削除とも0件。固定出力・通常のCodex履歴は変更しない。
 - 今回の作業メモ実装18ファイルは未コミット。前段の0.6.5コミット以降のpush・Release・実利用先deployは行っていない。
@@ -84,7 +99,7 @@
 - 実Codex 0.161.0（SHA256 a0f89acca07a511734cac7fddee26b2106fab68918717bc90df16104a0760a30）と認証なし隔離CODEX_HOME／ローカルResponses模擬サーバーで、保存した処理中フラグの残存を再現した。復元だけではモデル送信なし、ボタン時の最新thread/read 1回・固定続行依頼のturn/start 1回、二重操作でも再送なし、同じ会話・元の継承権限・以前の文脈の保持を確認した。ローカルモデル要求2件。証跡 `.artifacts/recovery-065/recover-1792913392376/`、結果 `.artifacts/recover-probe-1792913392806/result.json`。終了コード0・工程前後hash一致。通常の認証・履歴・外部モデルは使っていない。
 - 新ボタンで専用復旧を回避しないことの回帰として、実Codexのコンテキスト上限→圧縮→再起動→手動続行と、HTTP 429→停止復元→回復確認→手動続行も成功した。証跡 `.artifacts/recovery-065/context-1792913447075/` と `usage-1792913449110/`、結果context-probe-1792913447509／usage-probe-1792913449568のresult.json。終了コード0・工程前後hash一致。同じ隔離方式で、利用状況APIだけ模擬応答とした。
 - 発行前の固定AppDock 0.88.1（SHA256 a66a8f60851799f6964e04f468db67a9d5596b0d6d20183d57d2cfa2f09ae4cc）GUI22群は成功した。証跡 `.artifacts/recovery-065/ui-1792913392983/`、profile `.artifacts/ui-1792913394094/`。疑似App Serverの実プロセス切断→再接続で自動送信なし、活動中の直前状態での非送信、確認中表示、二重クリックでも続行1件、同じthread、下書き保持、明暗／360 CSS pxを確認した。終了コード0・工程前後hash一致。正常なUI復帰と既存の履歴省略・圧縮・利用制限も成功した。
-- 0.6.5を `A:/40.ARTIFACT/Applet.ChatCodex.at365` へ発行した。update.zipは48,056 bytes、SHA256 `bc5dbecda028e451f2ef6378516a01b47fba75e9ed3ca623e89d69d48aae1c1a`。feed版・サイズ・hash、ZIP全14ファイル・ソース13ファイル・USAGE一致を確認した。証跡 `.artifacts/recovery-065/publish-1792913589326/` とpublish-verification.json。発行済みパッケージ指定の同じ固定EXE GUI22群も成功した。証跡 `.artifacts/recovery-065/ui-1792913608833/`、profile `.artifacts/ui-1792913609690/`。終了コード0・工程前後hash一致。
+- 0.6.5を `<PUBLISH_ROOT>/Applet.ChatCodex.at365` へ発行した。update.zipは48,056 bytes、SHA256 `bc5dbecda028e451f2ef6378516a01b47fba75e9ed3ca623e89d69d48aae1c1a`。feed版・サイズ・hash、ZIP全14ファイル・ソース13ファイル・USAGE一致を確認した。証跡 `.artifacts/recovery-065/publish-1792913589326/` とpublish-verification.json。発行済みパッケージ指定の同じ固定EXE GUI22群も成功した。証跡 `.artifacts/recovery-065/ui-1792913608833/`、profile `.artifacts/ui-1792913609690/`。終了コード0・工程前後hash一致。
 - 最終照合validation.jsonでは、単体の22入力・ネイティブ各10入力・発行／最終GUI各45入力と完全ログhashが現在の内容と一致した。UTF-8・JS構文28ファイル・文書リンク43件・設定既定値・版一致・差分も確認した。テストプロセス残留0件。現在と直近の成功・過去のコミット照合の参照資料・固定出力・状態不明／未解決の失敗を保持し、削除対象0件。記録cleanup.json。通常のCodex履歴・認証は対象外。
 - 制約: 最新idle確認と次のturn/startの間に別クライアントの状態が変わる可能性は残り、その場合はCodex側の通常の拒否として扱い、自動再送しない。外部の設定変更・コマンド等の成否確認は固定依頼に従うCodexの作業であり、Appletによる完了保証ではない。組織／OS権限・認証・利用枠の制限を解除しない。KAGUYA実機・実モデルによる中断作業の実結果確認・物理IMEは未確認。新しい作業メモ／開発工程再開は今回含めない。0.6.5は未コミット。この0.6.5のpush・Release・実利用deployは行っていない。
 
@@ -106,7 +121,7 @@
 - 実Codex 0.161.0（SHA256 a0f89acca07a511734cac7fddee26b2106fab68918717bc90df16104a0760a30）と認証なし隔離CODEX_HOME／ローカルResponses模擬サーバーで、合計9,439,603 bytesの履歴を最大3,146,372 bytesずつ取得して復元した。古いfullの一括取得を使わず、同じ会話の次のモデル入力に表示を省略した3件の末尾も残ること、元の継承権限を保つことを確認した。ローカル要求2件、自動再送なし。証跡 `.artifacts/history-064/history-1792910297787/`、結果 `.artifacts/history-probe-1792910298220/result.json`。終了コード0・工程前後hash一致。試験用CODEX_HOMEだけ文脈上限を広げて自動圧縮を分離した。通常の認証・履歴・外部モデルは使っていない。
 - 同じ新しい履歴経路で、実Codexのコンテキスト上限→圧縮→再起動→手動続行と、HTTP 429→停止復元→回復確認→手動続行も成功した。証跡 `.artifacts/history-064/context-1792910348664/` と `usage-1792910350205/`、結果context-probe-1792910349070／usage-probe-1792910350619のresult.json。終了コード0・工程前後hash一致。利用状況APIだけ模擬応答を使った。
 - 発行前の固定AppDock 0.88.0（SHA256 bc5f4a2884609c3f26ee6304b3e62f61bc6dbecc9a63da12d723286900e68353）GUI21群は成功した。証跡 `.artifacts/history-064/ui-1792910298238/`、profile `.artifacts/ui-1792910299374/`。旧方式の代替読込み、履歴API失敗時の案内、巨大応答で切断後の専用ボタン、本文なし復元、通常入力の1回だけの続行と同じthread保持を確認した。終了コード0・工程前後hash一致。暗色／360 CSS pxでも案内と入力欄の幅を確認した。
-- 0.6.4を `A:/40.ARTIFACT/Applet.ChatCodex.at365` へ発行した。update.zipは46,284 bytes、SHA256 `b08af3cd19f38c8cb50a403d277b7dcdbb90a78f9ce52e766af7930067c3ab76`。feed版・サイズ・hash、ZIP全14ファイル・ソース13ファイル・USAGE一致を確認した。証跡 `.artifacts/history-064/publish-1792910469334/` とpublish-verification.json。発行済みパッケージ指定のGUI21群も同じ固定EXEで成功した。証跡 `.artifacts/history-064/ui-1792910481749/`、profile `.artifacts/ui-1792910482611/`。終了コード0・工程前後hash一致。
+- 0.6.4を `<PUBLISH_ROOT>/Applet.ChatCodex.at365` へ発行した。update.zipは46,284 bytes、SHA256 `b08af3cd19f38c8cb50a403d277b7dcdbb90a78f9ce52e766af7930067c3ab76`。feed版・サイズ・hash、ZIP全14ファイル・ソース13ファイル・USAGE一致を確認した。証跡 `.artifacts/history-064/publish-1792910469334/` とpublish-verification.json。発行済みパッケージ指定のGUI21群も同じ固定EXEで成功した。証跡 `.artifacts/history-064/ui-1792910481749/`、profile `.artifacts/ui-1792910482611/`。終了コード0・工程前後hash一致。
 - 最終照合validation.jsonでは、単体の21入力・ネイティブ各10入力・発行／最終GUI各44入力と完全ログhashが現在の内容と一致した。UTF-8・JS構文27ファイル・文書リンク43件・設定既定値・版一致・差分も確認した。今回のテストプロセス残留0件。現在・直近の成功と過去のコミット照合が参照する資料、固定出力、状態不明／未解決の失敗を保持し、削除対象0件。記録cleanup.json。通常のCodex履歴・認証は対象外。
 - 制約: 単一項目自体が8MiBを超える場合や保存方式による未対応では、本文の表示を省略する場合がある。本文なし復元も会話そのものが正常に再開できることが前提であり、認証・組織／OS権限・活動中の会話を回避しない。単一の巨大なライブ通信の受信、履歴一覧・全文書出し、切断後の専用続行ボタン、作業メモ／開発工程再開は今回の範囲外。KAGUYA実機・物理IME・実モデルによる長大な開発作業は未確認。0.6.4は未コミット。プッシュ・Release・実利用deployは行っていない。
 
@@ -129,7 +144,7 @@
 - 実Codex 0.161.0（SHA256 a0f89acca07a511734cac7fddee26b2106fab68918717bc90df16104a0760a30）と認証なし隔離CODEX_HOME／ローカルResponses模擬サーバーで、長い返答を1Mi以内の表示へ収めても中断要求を送らず、再起動後も上限を守り、同じ会話の次の入力に省略した末尾が含まれることを確認した。モデル要求はローカル2件、自動再送なし。証跡 `.artifacts/output-063/output-1792909008661/`、結果 `.artifacts/output-probe-1792909009115/result.json`。終了コード0・工程前後hash一致。通常の認証・履歴・外部モデルは使っていない。
 - 通信処理を共有する既存復旧の回帰として、実Codexのコンテキスト上限→圧縮→再起動→明示続行と、HTTP 429→再起動→利用可能確認→手動続行も成功した。証跡 `.artifacts/output-063/context-1792909083371/` と `usage-1792909086938/`、結果はcontext-probe-1792909083894／usage-probe-1792909087489のresult.json。終了コード0・工程前後hash一致。いずれも同じ認証なし隔離方式で、利用状況APIだけ模擬応答とした。
 - 発行前の固定AppDock 0.87.16（SHA256 be162efa2ee99f6fe57bd4f6fae11971270eb4a8dcdc89cb0e62e89fc92a4231）GUI20群は成功した。証跡 `.artifacts/output-063/ui-1792909006325/`、profile `.artifacts/ui-1792909007263/`。長い返答の上限・中断要求なし・下書き保持・明暗／狭幅・再起動後の省略案内・同一会話の次の入力・新しい会話での案内解除を確認した。終了コード0・工程前後hash一致。画面レビューで狭幅時にも案内を常に読めるよう、省略の全体案内を会話スクロール領域の外へ移し、発行後のGUIで最終配置を確認した。通信・会話制御は変更していない。
-- 0.6.3を `A:/40.ARTIFACT/Applet.ChatCodex.at365` へ発行した。update.zipは44,696 bytes、SHA256 `aee9ca231fabfee22a232674877205dc5648e097547359dd98f14b99a8efb725`。feed版・サイズ・hash、ZIP全14ファイル・ソース13ファイル・USAGE一致を確認した。証跡 `.artifacts/output-063/publish-1792909165199/` とpublish-verification.json。発行済みパッケージ指定の固定EXE GUI20群も成功し、狭幅／暗色でも全体の省略案内と返答末尾の印を確認した。証跡 `.artifacts/output-063/ui-1792909175722/`、profile `.artifacts/ui-1792909176623/`。終了コード0・工程前後hash一致。
+- 0.6.3を `<PUBLISH_ROOT>/Applet.ChatCodex.at365` へ発行した。update.zipは44,696 bytes、SHA256 `aee9ca231fabfee22a232674877205dc5648e097547359dd98f14b99a8efb725`。feed版・サイズ・hash、ZIP全14ファイル・ソース13ファイル・USAGE一致を確認した。証跡 `.artifacts/output-063/publish-1792909165199/` とpublish-verification.json。発行済みパッケージ指定の固定EXE GUI20群も成功し、狭幅／暗色でも全体の省略案内と返答末尾の印を確認した。証跡 `.artifacts/output-063/ui-1792909175722/`、profile `.artifacts/ui-1792909176623/`。終了コード0・工程前後hash一致。
 - 最終照合validation.jsonで、単体が読む最終ソース・試験21入力、ネイティブ各10入力、発行／GUI各44入力と完全ログhashを確認した。単体／ネイティブ後の差分は、それらが読み込まない省略案内のHTML/CSS配置・GUIの撮影時スクロール・USAGE説明だけで、最終GUIはそれらを含む。UTF-8・JS構文27ファイル・文書リンク43件・設定既定値・版一致・差分も確認した。
 - 整理確認では今回のテストプロセス残留0件。現在の成功証跡と過去のコミット照合が参照する証跡を保護し、出力方式ごとの新しい成功3回と再利用資料を保持した。状態不明・未解決の失敗・固定出力は削除せず、削除対象0件。記録cleanup.json。通常のCodex履歴・認証は対象外。
 - 制約: 単一JSON行が8MiBを超える場合や巨大な履歴ページは、引き続き通信の保護上限で終了する。履歴の別APIへの切替・全文書出し・任意開発ワークスペース・工程再開は今回含めない。既存items Mapがそのturn中の表示回収済み本文を次の送信まで保持する点は、今後の総メモリ改善候補として残す。今回の実機証拠は隔離環境であり、KAGUYA実機・実モデルの長大な開発作業・物理IMEの証拠ではない。0.6.3は未コミット。プッシュ・Release・実利用先deployは行っていない。
@@ -153,7 +168,7 @@
 - 共有する会話制御の回帰として、実Codexと同じ隔離方式によるHTTP 429・保存・復元・手動再開も成功した。ローカル要求2件、利用状況APIだけ模擬応答。証跡 `.artifacts/context-062/usage-1792907529007/`、結果 `.artifacts/usage-probe-1792907529428/result.json`。終了コード0・工程前後hash一致。通常の認証・履歴・外部モデルは使っていない。
 - 最初の固定EXE GUIはApplet起動待ちで失敗した。追加ページ操作名に大文字が含まれ、既存本体の小文字ID契約に反していたため、chat.context-continueへ修正した。修正後の固定AppDock 0.87.15（SHA256 cf3ee59f040dd84c744214b928707f647f9fb6ee3575bbf6b84668e64fb86eab）GUI19群は成功した。証跡 `.artifacts/context-062/ui-1792907632830/`、profile `.artifacts/ui-1792907633712/`。終了コード0・工程前後hash一致。圧縮受付中は続行できず、完了後の二重クリックでも続行1件、下書き保持、未対応時の引き継ぎ、送信前のモデル要求なし、旧履歴保持、圧縮中の本体終了後は結果不明として復元、停止・明示再試行を確認した。360 CSS px／暗色と明色の画面も確認した。
 - 画面レビューで引き継ぎ下書きの末尾が表示されていたため、下書き作成時に先頭へスクロールする1行を補った。発行済みGUIで先頭の説明が見えることを確認した。失敗記録 `.artifacts/context-062/ui-1792907542966/` は解決済みとして保持する。
-- 0.6.2を `A:/40.ARTIFACT/Applet.ChatCodex.at365` へ発行した。update.zipは44,018 bytes、SHA256 `86a92f51017301a42957e537ffde8b1711bf9013f59e20430b448febca5a831c`。feed版・サイズ・hash、ZIP全14ファイル・ソース13ファイル・USAGE一致を確認した。証跡 `.artifacts/context-062/publish-1792907757165/` とpublish-verification.json。発行済みパッケージ指定のGUI19群も成功した。証跡 `.artifacts/context-062/ui-1792907768809/`、profile `.artifacts/ui-1792907770224/`。終了コード0・工程前後hash一致。
+- 0.6.2を `<PUBLISH_ROOT>/Applet.ChatCodex.at365` へ発行した。update.zipは44,018 bytes、SHA256 `86a92f51017301a42957e537ffde8b1711bf9013f59e20430b448febca5a831c`。feed版・サイズ・hash、ZIP全14ファイル・ソース13ファイル・USAGE一致を確認した。証跡 `.artifacts/context-062/publish-1792907757165/` とpublish-verification.json。発行済みパッケージ指定のGUI19群も成功した。証跡 `.artifacts/context-062/ui-1792907768809/`、profile `.artifacts/ui-1792907770224/`。終了コード0・工程前後hash一致。
 - 最終照合は `.artifacts/context-062/validation.json`。単体が読む最終ソース・試験・manifest、実Codexプローブが読む会話制御とプローブ、発行／最終GUIの入力と完全ログhashを照合した。操作IDの修正と下書きスクロールは最終GUIで確認し、これらを読み込まないネイティブ試験は再利用した。GUI後に他作業で元のAppDock EXEが更新されたため、試験時のコピー・前後記録・結果のSHA256で0.87.15の実行を確認した。新しい本体版を試験済みとはしない。UTF-8・JS構文26ファイル・文書リンク43件・設定既定値・版の一致・差分を確認した。
 - 成功後、解決済みのHTTP 400隔離プローブ3フォルダーを結果JSONだけ退避して整理し、調査用一時スクリプトを削除した。対象の絶対パス・通常ディレクトリ・再解析ポイントなし・参照プロセスなしを確認した。現行と過去の再利用証跡・最新のGUI／ネイティブ成功・未解決／状態不明・固定出力は保護した。記録cleanup.json。通常のCodex履歴は対象外。最終の通常ユーザーCIM照会でも今回の隔離テストプロセス残留は0件。
 - 制約: 圧縮後も上限を解消できる保証はない。引き継ぎは保持済み本文の抜粋であり、既存ファイルや実行済み操作の完全な要約ではない。KAGUYA実機・実利用枠の自然回復・実モデルの長大会話・物理IME・開発セット／工程再開は未確認または将来構想。今回の0.6.2は未コミット。プッシュ・Release・実利用先deployは行っていない。
@@ -177,7 +192,7 @@
 - 未確認: KAGUYA等の実利用枠を使い切った状態・組織固有の制限・通常利用中の自然な回復は再現していない。採用APIが利用許可を返さない場合は回復を断定せず再確認を案内し、通常の明示的な文章送信は維持する。停止位置からコマンドを機械的に再実行する仕組みではなく、Codexが会話と作業状況を確認して未完了分を続ける。
 - 修正後の固定AppDock 0.87.14（EXE SHA256 `606b48cfe671623b7018264ad4028cc479c014bd04a9416f179f188974ec13a9`）＋隔離profile＋疑似CodexのGUI16群が成功した。通常のチャット・承認・ログ保持・復元に加え、制限パネルの明暗／360 CSS px表示、下書き保持、時刻・利用可否不明、API失敗、停止状態での本体再起動、二重クリック時の1回だけの再開、元の依頼の非再送、アカウント識別子の非表示を確認した。証跡 `.artifacts/usage-061/ui-1792905799312/`、profile `.artifacts/ui-1792905800132/`。終了コード0・工程前後hash一致。
 - 発行前の最終差分レビューで支障のある指摘はなく、既存の選択・元の継承権限・保存先・非再送方針を保持することを確認した。GUI後は保存する情報の説明を「最小限の停止情報」へ明確化した文書変更だけで、ソース・試験は変更していない。
-- 0.6.1を `A:/40.ARTIFACT/Applet.ChatCodex.at365` へ発行成功。update.zipは39,696 bytes、SHA256 `45378a7ab5507d24b0201d5f6d26c7b923177cf00afce9a85ab1e729e416c741`。feedの版・サイズ・hash、ZIP全13ファイル、ソース12ファイル、生成USAGEの一致を確認した。証跡 `.artifacts/usage-061/publish-1792905948874/` と `publish-verification.json`。
+- 0.6.1を `<PUBLISH_ROOT>/Applet.ChatCodex.at365` へ発行成功。update.zipは39,696 bytes、SHA256 `45378a7ab5507d24b0201d5f6d26c7b923177cf00afce9a85ab1e729e416c741`。feedの版・サイズ・hash、ZIP全13ファイル、ソース12ファイル、生成USAGEの一致を確認した。証跡 `.artifacts/usage-061/publish-1792905948874/` と `publish-verification.json`。
 - 発行済みパッケージを指定した固定EXE GUI16群も成功した。証跡 `.artifacts/usage-061/ui-1792905965700/`、profile `.artifacts/ui-1792905966550/`。工程前後hash一致・終了コード0。停止パネルの明暗・狭幅と再開後の画面を確認した。UTF-8・JS構文24ファイル・文書リンク43件・manifest版と設定既定値・差分も確認した。
 - 最終照合は `.artifacts/usage-061/validation.json` に記録する。単体・実Codex試験後のUSAGE説明文だけの変更は、それらが読み込まない文書変更として区別する。初回の解消済み失敗記録・再利用証跡・直近3件の隔離実Codex制限試験を保持し、一時的な通常環境の読取りプローブは結果JSONを残して整理する。本体変更・commit・push・GitHub Release・実利用deployは行っていない。
 
@@ -198,7 +213,7 @@
 - 発行前の固定AppDock 0.87.7（EXE SHA256 `7280bd9e0122a537cf932890a2a9259995ae4d471e48b02c91b04c7e29ec2de1`）＋隔離profile＋疑似Codex GUIで、Applet再有効化とAppDockプロセス終了・再起動後の実Storage復元・重複なしの続きの送信を含む11群が成功した。既存の送信キー・承認・詳細／通信ログ・400カード回収・狭幅も成功。証跡 `.artifacts/resume-060/ui-1792880088603/`、画面 `.artifacts/ui-1792880089491/resumed.png`。後続の終了待ち・最終状態判定の修正後は、発行済みパッケージでGUIを再確認する。
 - 初回の隔離プローブでは、turn未送信の空threadはCodexにrolloutがなく、再開できないことを確認した。ローカル模擬モデルで1ターンを完了した実試験へ切り替えて成功した。空会話を通常利用者の履歴へ作成したり、認証をコピーしたりしていない。
 - 制約: 保存対象は0.6.0以降に再開情報を記録した最後の会話。同じPC・AppDock配置・Codex保存先で利用する。旧版の会話を推測して選ばず、下書き・過去の診断カードは復元しない。会話表示は最新200ターン・取得データ約6MiBで省略するが、Codexの文脈を削除しない。今回の実機証拠はLUNAの隔離環境であり、他PCの実MCP設定変更・物理IME・開発セットClone／ビルド／導入までの証拠ではない。
-- 0.6.0を `A:/40.ARTIFACT/Applet.ChatCodex.at365` へ発行成功。update.zipは35,129 bytes、SHA256 `cad7dd676dbdfb011e16288dd193a95c0e3cf41a104b58c3fbd12931d4ec612f`。feedの版・サイズ・hash、ZIP全12ファイル、ソース11ファイル、生成USAGEの一致を確認した。証跡 `.artifacts/resume-060/publish-1792880382544/` と `publish-verification.json`。
+- 0.6.0を `<PUBLISH_ROOT>/Applet.ChatCodex.at365` へ発行成功。update.zipは35,129 bytes、SHA256 `cad7dd676dbdfb011e16288dd193a95c0e3cf41a104b58c3fbd12931d4ec612f`。feedの版・サイズ・hash、ZIP全12ファイル、ソース11ファイル、生成USAGEの一致を確認した。証跡 `.artifacts/resume-060/publish-1792880382544/` と `publish-verification.json`。
 - 発行済みパッケージを指定した固定EXE GUIの最終12群が成功した。再起動後の復元・次の送信に加え、履歴消失時に送信を止め、「新しいチャット」で参照を解除して再接続する画面操作まで確認した。証跡 `.artifacts/resume-060/ui-1792880393813/`、profile `.artifacts/ui-1792880394661/`。終了コード0、工程前後入力hash一致。復元・失敗画面も確認した。
 - UTF-8・JS構文22ファイル・文書リンク43件・manifest版と設定既定値・差分の空白を確認した。対象コードが一致する単体39件、実Codex再開試験、発行・GUIの記録を揃え、本体変更・commit・push・Release・実利用deployは行っていない。初回の空thread調査は結果JSONだけを退避し、不要な隔離プローブ2フォルダーと一時スクリプトを整理する。再利用証跡と直近3件の実Codex再開試験は保持する。
 
@@ -206,7 +221,7 @@
 
 ### 対象と実施範囲
 
-- `A:/30.PROJECT/Applet.ChatCodex.at365` を新規の独立Gitリポジトリとして初期化した。
+- `<PROJECT_ROOT>/Applet.ChatCodex.at365` を新規の独立Gitリポジトリとして初期化した。
 - ブランチはmain、初回コミットなし、リモート・追跡先なし。取得先がないためpullは実施していない。
 - 親30.PROJECTと参照元AppDock本体には既存変更があり、読み取りのみとした。自動pull・stash・既存変更の統合は行っていない。
 - 既存のNode Applet、ローカルページ、pageActions、notifyChanged、Storage、共通API、MCPの契約と実装を参照した。
@@ -274,7 +289,7 @@ GUI試験の初回は、試験設定へshortcutsの誤った配列値を追加�
 
 ### 発行物
 
-- `publish.bat` 成功。発行先は `A:/40.ARTIFACT/Applet.ChatCodex.at365`。
+- `publish.bat` 成功。発行先は `<PUBLISH_ROOT>/Applet.ChatCodex.at365`。
 - Appletフォルダー、update.json、update.zip、初回の配置用スクリプトを作成。既存のAppDock.Updater.exeを直接利用し、本体を再ビルドしていない。
 - ZIPは19,391 bytes、SHA256 `0e391840d32c9710331dee38d0444e763df19cbae88c1444474267c459755ef5`。feedの版・ID・サイズ・hashと一致し、ZIP内8ファイルすべてが発行フォルダーのhashと一致した。
 - manifestと実行コード7ファイルは実GUI試験時のコピーとも一致する。配布用USAGE.mdのソースリポジトリ専用リンクを単独読書用の表記へ整えて同版で再梱包した。実行コードの変更を伴わない文書のみの修正。
@@ -363,7 +378,7 @@ GUI試験の初回は、試験設定へshortcutsの誤った配列値を追加�
 
 ### 発行物と未確認範囲
 
-- 発行先: `A:/40.ARTIFACT/Applet.ChatCodex.at365`。版0.2.0、最低ホスト版0.86.13。
+- 発行先: `<PUBLISH_ROOT>/Applet.ChatCodex.at365`。版0.2.0、最低ホスト版0.86.13。
 - update.zipは24,789 bytes、SHA256 `70bf7a7c62368d8ecdacf0d0a967936b6059412e6d7f441a2c19cd2d0d194030`。feedの版・サイズ・hashと一致。ZIP内9ファイルすべてが発行フォルダーと一致し、実行コード／manifest 8ファイルはソースとも一致した。
 - 梱包照合は `.artifacts/approval-020/publish-verification.json`。既存配置スクリプトを保持し、実利用先へのdeployは行っていない。
 - KAGUYA実機、そこで有効な管理・承認設定との組合せ、実AppDock設定の保存、URL型／複雑なMCPフォーム、自動審査の全判断結果は未確認。LUNAの成功だけでKAGUYAでの旧キャンセル原因が解消したと断定しない。
@@ -407,7 +422,7 @@ GUI試験の初回は、試験設定へshortcutsの誤った配列値を追加�
 
 ### 最終発行物の確認
 
-- 発行先 `A:/40.ARTIFACT/Applet.ChatCodex.at365`。`publish.bat` 終了コード0、証跡 `.artifacts/details-030/publish-1792871934009/`、入力hash一致。
+- 発行先 `<PUBLISH_ROOT>/Applet.ChatCodex.at365`。`publish.bat` 終了コード0、証跡 `.artifacts/details-030/publish-1792871934009/`、入力hash一致。
 - update.zipは30,441 bytes、SHA256 `2cc25cb48af6f2cd33c1b4f5f58feeb61bb472e5b4ab9d154f299b6226198e49`。feedの版0.3.0・サイズ・hashと一致。ZIP内11ファイルは発行フォルダーと一致し、実行コード／manifestの10ファイルはソースとも一致した。USAGE.mdも利用仕様からの生成結果と一致。詳細 `.artifacts/details-030/publish-verification.json`。
 - `CHATCODEX_TEST_PACKAGE` に発行済みフォルダーを指定し、隔離コピーで最終GUI8群と実Codex GUIを再実行して成功。証跡 `.artifacts/details-030/ui-1792871942249/`、`.artifacts/details-030/approval-1792871959870/`。両方とも終了コード0・入力hash一致。画面／結果は `.artifacts/ui-1792871943124/`、`.artifacts/approval-ui-1792871960681/`。
 - 最終文書・文字コード・構文・ローカルリンクの検査は37ファイル、JS/CJS構文19件、参照39件で成功。PowerShellのUTF-8 BOM／CRLF、BATのASCII／CRLF、manifestと設定既定値の一致、Git差分の空白検査も成功。詳細 `.artifacts/details-030/document-check.json`。
@@ -456,7 +471,7 @@ GUI試験の初回は、試験設定へshortcutsの誤った配列値を追加�
 
 ### 発行物・最終確認
 
-- 発行先 `A:/40.ARTIFACT/Applet.ChatCodex.at365`、版0.4.0、最低ホスト版0.86.13。publish終了コード0、入力hash一致。証跡 `.artifacts/logs-040/publish-1792874979485/`。
+- 発行先 `<PUBLISH_ROOT>/Applet.ChatCodex.at365`、版0.4.0、最低ホスト版0.86.13。publish終了コード0、入力hash一致。証跡 `.artifacts/logs-040/publish-1792874979485/`。
 - update.zipは31,405 bytes、SHA256 `93f4d46cdc208eb91c2ebbb9097c3c08a733bcd02e36628a3243a14bd89aa28e`。feedの版・サイズ・hashが一致し、ZIP全11ファイルと発行フォルダー、実行コード／manifest 10ファイルとソース、生成USAGEと利用仕様が一致。照合結果 `.artifacts/logs-040/publish-verification.json`。
 - 発行済みフォルダーをCHATCODEX_TEST_PACKAGEへ指定したコピーで、GUI9群と実Codex GUIを再実行して成功した。証跡 `.artifacts/logs-040/ui-1792874998748/`、`approval-1792875017765/`。画面／結果は `.artifacts/ui-1792874999651/`、`.artifacts/approval-ui-1792875018657/`。いずれも終了コード0・前後入力hash・ログhash一致。
 - 文書・文字コード・構文・リンク・設定既定値を37ファイル、JS/CJS構文19件、ローカル参照43件で確認し、Git差分の空白検査も成功。`.artifacts/logs-040/document-check.json` に記録した。READMEの役割は変更していない。
@@ -482,7 +497,7 @@ GUI試験の初回は、試験設定へshortcutsの誤った配列値を追加�
 
 ### 最終発行物
 
-- 発行先 `A:/40.ARTIFACT/Applet.ChatCodex.at365`。版0.5.0、最低ホスト版0.86.13、publish終了コード0・入力hash一致。証跡 `.artifacts/logs-050/publish-1792875696901/`。
+- 発行先 `<PUBLISH_ROOT>/Applet.ChatCodex.at365`。版0.5.0、最低ホスト版0.86.13、publish終了コード0・入力hash一致。証跡 `.artifacts/logs-050/publish-1792875696901/`。
 - update.zipは31,678 bytes、SHA256 `da5416d04bf6126832c89bdf5922e0fd4162cf780a806b9fc716bbcff1ddd5de`。feedの版・サイズ・hash、ZIP全11ファイルと発行フォルダー、実行コード／manifest 10ファイルとソース、生成USAGEと利用仕様が一致。照合結果 `.artifacts/logs-050/publish-verification.json`。
 - 発行済みフォルダーを指定したコピーで、旧traceの保持を含むGUI10群と実Codex GUIが成功した。証跡 `.artifacts/logs-050/ui-1792875710422/`、`approval-1792875729419/`。画面／結果は `.artifacts/ui-1792875711293/`、`.artifacts/approval-ui-1792875730240/`。終了コード0・前後入力hash・ログhash一致。
 - 最終文書・文字コード・構文・ローカルリンク・設定既定値の検査は37ファイル、JS/CJS 19件、参照43件で成功。Git差分の空白検査も成功。`.artifacts/logs-050/document-check.json` に記録した。
